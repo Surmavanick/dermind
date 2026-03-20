@@ -1,0 +1,165 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 210 33% 98%;
+    --foreground: 215 30% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 215 30% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 215 30% 12%;
+
+    --primary: 211 65% 45%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 210 40% 94%;
+    --secondary-foreground: 215 30% 18%;
+
+    --muted: 210 25% 95%;
+    --muted-foreground: 215 15% 48%;
+
+    --accent: 199 80% 46%;
+    --accent-foreground: 0 0% 100%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 210 20% 90%;
+    --input: 210 20% 90%;
+    --ring: 211 65% 45%;
+
+    --radius: 0.625rem;
+
+    /* Custom clinical tokens */
+    --clinical-blue: 211 65% 45%;
+    --clinical-blue-light: 210 60% 96%;
+    --clinical-cyan: 199 80% 46%;
+    --clinical-green: 152 60% 42%;
+    --clinical-amber: 38 92% 50%;
+    --clinical-red: 0 72% 51%;
+    --clinical-glass: 210 40% 98% / 0.8;
+    --gradient-clinical: linear-gradient(135deg, hsl(211 65% 45%), hsl(199 80% 46%));
+    --gradient-hero: linear-gradient(160deg, hsl(210 33% 98%) 0%, hsl(210 60% 96%) 50%, hsl(210 40% 94%) 100%);
+    --gradient-section: linear-gradient(180deg, hsl(0 0% 100%) 0%, hsl(210 33% 98%) 100%);
+    --shadow-card: 0 1px 3px hsl(215 30% 12% / 0.04), 0 4px 12px hsl(215 30% 12% / 0.06);
+    --shadow-card-hover: 0 4px 16px hsl(211 65% 45% / 0.1), 0 8px 32px hsl(215 30% 12% / 0.06);
+    --shadow-glass: 0 8px 32px hsl(211 65% 45% / 0.08);
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+
+  .dark {
+    --background: 215 30% 8%;
+    --foreground: 210 25% 92%;
+    --card: 215 28% 12%;
+    --card-foreground: 210 25% 92%;
+    --popover: 215 28% 12%;
+    --popover-foreground: 210 25% 92%;
+    --primary: 211 65% 55%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 215 25% 18%;
+    --secondary-foreground: 210 25% 92%;
+    --muted: 215 20% 16%;
+    --muted-foreground: 215 15% 58%;
+    --accent: 199 70% 50%;
+    --accent-foreground: 0 0% 100%;
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 210 40% 98%;
+    --border: 215 20% 20%;
+    --input: 215 20% 20%;
+    --ring: 211 65% 55%;
+    --clinical-blue: 211 65% 55%;
+    --clinical-blue-light: 215 25% 16%;
+    --sidebar-background: 240 5.9% 10%;
+    --sidebar-foreground: 240 4.8% 95.9%;
+    --sidebar-primary: 224.3 76.3% 48%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 240 3.7% 15.9%;
+    --sidebar-accent-foreground: 240 4.8% 95.9%;
+    --sidebar-border: 240 3.7% 15.9%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', sans-serif;
+  }
+}
+
+@layer utilities {
+  .gradient-clinical {
+    background: linear-gradient(135deg, hsl(var(--clinical-blue)), hsl(var(--clinical-cyan)));
+  }
+
+  .gradient-hero-bg {
+    background: linear-gradient(160deg, hsl(var(--background)) 0%, hsl(var(--clinical-blue-light)) 50%, hsl(var(--secondary)) 100%);
+  }
+
+  .gradient-section {
+    background: linear-gradient(180deg, hsl(var(--card)) 0%, hsl(var(--background)) 100%);
+  }
+
+  .glass-card {
+    background: hsl(var(--clinical-glass));
+    backdrop-filter: blur(16px);
+    border: 1px solid hsl(var(--border));
+    box-shadow: var(--shadow-glass);
+  }
+
+  .card-clinical {
+    background: hsl(var(--card));
+    border: 1px solid hsl(var(--border));
+    box-shadow: var(--shadow-card);
+    transition: box-shadow 0.3s ease, transform 0.3s ease;
+  }
+
+  .card-clinical:hover {
+    box-shadow: var(--shadow-card-hover);
+    transform: translateY(-2px);
+  }
+
+  .text-gradient-clinical {
+    background: linear-gradient(135deg, hsl(var(--clinical-blue)), hsl(var(--clinical-cyan)));
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .risk-low {
+    color: hsl(var(--clinical-green));
+    border-color: hsl(var(--clinical-green));
+  }
+
+  .risk-moderate {
+    color: hsl(var(--clinical-amber));
+    border-color: hsl(var(--clinical-amber));
+  }
+
+  .risk-high {
+    color: hsl(var(--clinical-red));
+    border-color: hsl(var(--clinical-red));
+  }
+}
