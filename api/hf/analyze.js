@@ -1,13 +1,10 @@
-export const config = { runtime: "edge", maxDuration: 60 };
+export const config = { maxDuration: 60, api: { bodyParser: false } };
 
 const HF_SPACE_URL = "https://mstepien-dermatolog-ai-scan.hf.space";
 
-export default async function handler(request) {
-  if (request.method !== "POST") {
-    return new Response(JSON.stringify({ success: false, detail: "Method not allowed" }), {
-      status: 405,
-      headers: { "content-type": "application/json" },
-    });
+export default async function handler(req, res) {
+  if (req.method !== "POST") {
+    return res.status(405).json({ success: false, detail: "Method not allowed" });
   }
 
   try {
@@ -16,40 +13,36 @@ export default async function handler(request) {
     const setCookie = initResp.headers.get("set-cookie") || "";
     const cookie = setCookie.split(";")[0] || "";
 
-    // Step 2: parse incoming FormData (field: "file") → rebuild with "files"
-    const incoming = await request.formData();
-    const file = incoming.get("file");
-    if (!file) {
-      return new Response(JSON.stringify({ success: false, detail: "No file provided" }), {
-        status: 400,
-        headers: { "content-type": "application/json" },
-      });
-    }
+    // Step 2: read raw body, rename field "file" → "files" for HF Space
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const rawBody = Buffer.concat(chunks);
+    const contentType = req.headers["content-type"] || "";
 
-    const uploadForm = new FormData();
-    uploadForm.append("files", file, file.name || "image.jpg");
+    // Replace name="file" with name="files" in the multipart body
+    const fixed = Buffer.from(
+      rawBody.toString("binary").replace(/name="file"/g, 'name="files"'),
+      "binary"
+    );
 
     const uploadResp = await fetch(`${HF_SPACE_URL}/api/photos/upload`, {
       method: "POST",
-      headers: cookie ? { cookie } : {},
-      body: uploadForm,
+      headers: {
+        "content-type": contentType,
+        ...(cookie ? { cookie } : {}),
+      },
+      body: fixed,
     });
 
     if (!uploadResp.ok) {
       const text = await uploadResp.text();
-      return new Response(JSON.stringify({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` }), {
-        status: 502,
-        headers: { "content-type": "application/json" },
-      });
+      return res.status(502).json({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` });
     }
 
     const uploadJson = await uploadResp.json();
     const ids = uploadJson.ids || [];
     if (!ids.length) {
-      return new Response(JSON.stringify({ success: false, detail: "No photo id returned" }), {
-        status: 502,
-        headers: { "content-type": "application/json" },
-      });
+      return res.status(502).json({ success: false, detail: "No photo id returned" });
     }
 
     // Step 3: analyze
@@ -64,28 +57,19 @@ export default async function handler(request) {
 
     if (!analyzeResp.ok) {
       const text = await analyzeResp.text();
-      return new Response(JSON.stringify({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` }), {
-        status: 502,
-        headers: { "content-type": "application/json" },
-      });
+      return res.status(502).json({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` });
     }
 
     const analysisJson = await analyzeResp.json();
     const predictions = analysisJson.predictions || [];
 
-    return new Response(JSON.stringify({
+    return res.status(200).json({
       success: true,
       top_prediction: predictions[0] || null,
       predictions,
-    }), {
-      status: 200,
-      headers: { "content-type": "application/json" },
     });
 
   } catch (err) {
-    return new Response(JSON.stringify({ success: false, detail: String(err) }), {
-      status: 500,
-      headers: { "content-type": "application/json" },
-    });
+    return res.status(500).json({ success: false, detail: String(err) });
   }
 }
