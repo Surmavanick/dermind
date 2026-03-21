@@ -547,19 +547,6 @@ const Dashboard = () => {
           {/* Col 2: Preview */}
           <div className="bg-white border border-slate-200/60 rounded-[20px] shadow-sm p-5 lg:col-span-2 min-h-[610px]">
             <div className="mb-3">
-              <div className="grid grid-cols-4 gap-4 mb-3">
-                {[1, 2, 3, 4].map((idx) => {
-                  const done = stage > idx;
-                  const active = loading && stage === idx;
-                  return (
-                    <div key={`stage-strip-${idx}`} className="space-y-1">
-                      <div className={`h-1.5 rounded-full transition-all duration-300 ${
-                        done ? "bg-emerald-500" : active ? "bg-blue-500 animate-pulse" : "bg-slate-200"
-                      }`} />
-                    </div>
-                  );
-                })}
-              </div>
               <div className="flex items-center justify-between mb-2">
                 <h2 className="text-lg font-semibold text-slate-900">2. Preview</h2>
                 <span className="text-xs text-slate-500">Pipeline View</span>
@@ -676,15 +663,6 @@ const Dashboard = () => {
               })}
             </div>
 
-            <div className="mt-6">
-              <div className="flex items-center justify-between text-sm mb-2">
-                <span className="font-semibold text-slate-700">{stageTitle}</span>
-                <span className="font-mono text-slate-500">{progress}%</span>
-              </div>
-              <div className="h-2 rounded-full bg-slate-200 overflow-hidden">
-                <div className="h-full bg-blue-600 transition-all duration-700" style={{ width: `${progress}%` }} />
-              </div>
-            </div>
           </div>
           
           {/* Results */}
