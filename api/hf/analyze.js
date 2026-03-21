@@ -1,60 +1,47 @@
-import { Readable } from "stream";
+export const config = { runtime: "edge" };
 
 const HF_SPACE_URL = "https://mstepien-dermatolog-ai-scan.hf.space";
 
-export const config = { api: { bodyParser: false } };
-
-async function readBody(req) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    req.on("data", (c) => chunks.push(c));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
-    req.on("error", reject);
-  });
-}
-
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    res.status(405).json({ error: "Method not allowed" });
-    return;
+export default async function handler(request) {
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ error: "Method not allowed" }), { status: 405 });
   }
 
   try {
-    // Step 1: get session cookie from HF Space root
+    // Step 1: get session cookie
     const initResp = await fetch(`${HF_SPACE_URL}/`, { redirect: "follow" });
     const setCookie = initResp.headers.get("set-cookie") || "";
     const cookie = setCookie.split(";")[0];
 
-    // Step 2: forward the multipart body to HF Space upload
-    const rawBody = await readBody(req);
-    const contentType = req.headers["content-type"] || "";
+    // Step 2: parse incoming file and re-send with correct field name "files"
+    const incoming = await request.formData();
+    const file = incoming.get("file");
+    if (!file) {
+      return new Response(JSON.stringify({ success: false, detail: "No file provided" }), { status: 400 });
+    }
+
+    const uploadForm = new FormData();
+    uploadForm.append("files", file, file.name || "image.jpg");
 
     const uploadResp = await fetch(`${HF_SPACE_URL}/api/photos/upload`, {
       method: "POST",
-      headers: {
-        "content-type": contentType,
-        ...(cookie ? { cookie } : {}),
-      },
-      body: rawBody,
+      headers: cookie ? { cookie } : {},
+      body: uploadForm,
     });
 
     if (!uploadResp.ok) {
       const text = await uploadResp.text();
-      res.status(502).json({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` });
-      return;
+      return new Response(JSON.stringify({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` }), { status: 502 });
     }
 
     const uploadJson = await uploadResp.json();
     const ids = uploadJson.ids || [];
     if (!ids.length) {
-      res.status(502).json({ success: false, detail: "No photo id returned from upload" });
-      return;
+      return new Response(JSON.stringify({ success: false, detail: "No photo id returned" }), { status: 502 });
     }
 
-    const photoId = ids[0];
-
     // Step 3: analyze
-    const analyzeResp = await fetch(`${HF_SPACE_URL}/api/photos/${photoId}/analyze`, {
+    const analyzeResp = await fetch(`${HF_SPACE_URL}/api/photos/${ids[0]}/analyze`, {
       method: "POST",
       headers: {
         "content-type": "application/json",
@@ -65,19 +52,19 @@ export default async function handler(req, res) {
 
     if (!analyzeResp.ok) {
       const text = await analyzeResp.text();
-      res.status(502).json({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` });
-      return;
+      return new Response(JSON.stringify({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` }), { status: 502 });
     }
 
     const analysisJson = await analyzeResp.json();
     const predictions = analysisJson.predictions || [];
 
-    res.status(200).json({
+    return new Response(JSON.stringify({
       success: true,
       top_prediction: predictions[0] || null,
       predictions,
-    });
+    }), { status: 200, headers: { "content-type": "application/json" } });
+
   } catch (err) {
-    res.status(500).json({ success: false, detail: String(err) });
+    return new Response(JSON.stringify({ success: false, detail: String(err) }), { status: 500 });
   }
 }
