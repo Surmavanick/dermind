@@ -553,7 +553,7 @@ const Dashboard = () => {
               </div>
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-1">
                 {[1, 2, 3, 4].map((idx) => {
-                  const done = stage > idx;
+                  const done = top ? stage >= idx : stage > idx;
                   const active = loading && stage === idx;
                   return (
                     <div
