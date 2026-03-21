@@ -262,7 +262,10 @@ const Dashboard = () => {
   useEffect(() => {
     if (!localStorage.getItem(AUTH_KEY)) {
       window.location.href = "/doctor-login";
+      return;
     }
+    // Pre-warm HF Space so it's ready when user clicks Analyze
+    fetch("/api/hf/wake", { method: "GET" }).catch(() => {});
   }, []);
 
   useEffect(() => {
