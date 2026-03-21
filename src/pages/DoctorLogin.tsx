@@ -3,8 +3,6 @@ import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 
 const AUTH_KEY = "doctor_auth_session";
-const DASHBOARD_URL =
-  import.meta.env.VITE_DERMATOLOG_DASHBOARD_URL || "http://127.0.0.1:8080/dashboard";
 
 const DoctorLogin = () => {
   const navigate = useNavigate();
@@ -35,12 +33,12 @@ const DoctorLogin = () => {
           loginAt: new Date().toISOString(),
         })
       );
-      window.location.href = DASHBOARD_URL;
+      navigate("/dashboard");
     }, 700);
   };
 
   const enterDashboard = () => {
-    window.location.href = DASHBOARD_URL;
+    navigate("/dashboard");
   };
 
   return (
