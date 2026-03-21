@@ -512,8 +512,8 @@ const Dashboard = () => {
                 <div className="p-4 rounded-full bg-slate-100 group-hover:bg-blue-100 transition-colors duration-300 mb-3">
                   <UploadCloud className="w-7 h-7 text-slate-500 group-hover:text-blue-600 transition-colors duration-300" />
                 </div>
-                <span className="font-semibold text-sm text-slate-600">Drop image here or <span className="text-blue-600">click to browse</span></span>
-                <span className="text-xs text-slate-400 mt-1">Supports: JPG, PNG, WEBP</span>
+                <span className="font-semibold text-sm text-slate-600">Drop CDI here or click browse here</span>
+                <span className="text-xs text-slate-400 mt-1">CDI document</span>
               </label>
 
               <div className="flex flex-col sm:flex-row gap-3">
