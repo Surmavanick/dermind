@@ -1,4 +1,4 @@
-export const config = { maxDuration: 60 };
+export const config = { maxDuration: 60, api: { bodyParser: false } };
 
 const HF_SPACE_URL = "https://mstepien-dermatolog-ai-scan.hf.space";
 
