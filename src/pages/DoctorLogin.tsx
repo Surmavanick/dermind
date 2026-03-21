@@ -1,8 +1,13 @@
-import { FormEvent, useMemo, useState } from "react";
+import { FormEvent, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 
 const AUTH_KEY = "doctor_auth_session";
+
+const USERS: Record<string, string> = {
+  "DR-1024": "dermind2024",
+  "testuser": "test123",
+};
 
 const DoctorLogin = () => {
   const navigate = useNavigate();
@@ -11,16 +16,17 @@ const DoctorLogin = () => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
 
-  const isAuthenticated = useMemo(() => {
-    return Boolean(localStorage.getItem(AUTH_KEY));
-  }, []);
-
   const handleLogin = (e: FormEvent) => {
     e.preventDefault();
     setError("");
 
     if (!doctorId.trim() || !password.trim()) {
       setError("Please fill Doctor ID and password.");
+      return;
+    }
+
+    if (USERS[doctorId.trim()] !== password.trim()) {
+      setError("Invalid Doctor ID or password.");
       return;
     }
 
@@ -35,10 +41,6 @@ const DoctorLogin = () => {
       );
       navigate("/dashboard");
     }, 700);
-  };
-
-  const enterDashboard = () => {
-    navigate("/dashboard");
   };
 
   return (
@@ -80,16 +82,6 @@ const DoctorLogin = () => {
             {loading ? "Authenticating..." : "Login and Open AI Dashboard"}
           </Button>
         </form>
-
-        {isAuthenticated ? (
-          <Button
-            variant="outline"
-            className="w-full mt-3"
-            onClick={enterDashboard}
-          >
-            Already logged in - Enter Dashboard
-          </Button>
-        ) : null}
 
         <Button
           variant="ghost"
