@@ -61,12 +61,17 @@ export default async function handler(req, res) {
     }
 
     const analysisJson = await analyzeResp.json();
-    const predictions = analysisJson.predictions || [];
+    const predictions =
+      analysisJson.predictions ||
+      analysisJson.results ||
+      analysisJson.labels ||
+      [];
 
     return res.status(200).json({
       success: true,
       top_prediction: predictions[0] || null,
       predictions,
+      _raw: analysisJson,
     });
 
   } catch (err) {

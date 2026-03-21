@@ -387,11 +387,15 @@ const Dashboard = () => {
       if (fetchError) throw fetchError;
       if (!data) throw new Error("No analysis response returned.");
 
-      const preds: Prediction[] = data.predictions || [];
+      console.log("[Dermind] raw API response:", JSON.stringify(data));
+      const preds: Prediction[] =
+        (data.predictions?.length ? data.predictions : null) ||
+        ((data as Record<string, unknown>)._raw as { predictions?: Prediction[] })?.predictions ||
+        [];
       const topPred = data.top_prediction || preds[0] || null;
       setPredictions(preds.slice(0, 8));
       setTop(topPred);
-      setStatus("Analysis complete. Results loaded.");
+      setStatus(topPred ? "Analysis complete. Results loaded." : `Analysis complete. No predictions returned. Raw: ${JSON.stringify((data as Record<string, unknown>)._raw).slice(0, 200)}`);
     } catch (e: unknown) {
       if (analysisRunRef.current !== runId) return;
       const message = e instanceof Error ? e.message : "Error";
