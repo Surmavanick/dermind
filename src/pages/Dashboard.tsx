@@ -524,6 +524,22 @@ const Dashboard = () => {
                 <h3 className="text-sm font-semibold text-slate-700">Status</h3>
                 <p className="text-sm text-slate-500 mt-1">{status}</p>
               </div>
+
+              {top && (
+                <div className="mt-4 border-t border-slate-100 pt-3 space-y-2">
+                  <div className="bg-blue-50 border border-blue-200/80 rounded-xl px-4 py-3">
+                    <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-500 mb-0.5">Top Prediction</p>
+                    <p className="text-base font-bold text-slate-800">{top.label}</p>
+                    <p className="text-sm text-blue-600 font-medium">{(top.score * 100).toFixed(2)}%</p>
+                  </div>
+                  {predictions.slice(1, 4).map((p) => (
+                    <div key={p.label} className="flex justify-between items-center text-xs px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200/60">
+                      <span className="text-slate-600 font-medium">{p.label}</span>
+                      <span className="text-slate-400 font-mono">{(p.score * 100).toFixed(2)}%</span>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           </div>
 
