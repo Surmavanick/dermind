@@ -1,10 +1,13 @@
-export const config = { maxDuration: 60, api: { bodyParser: false } };
+export const config = { runtime: "edge", maxDuration: 60 };
 
 const HF_SPACE_URL = "https://mstepien-dermatolog-ai-scan.hf.space";
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") {
-    return res.status(405).json({ success: false, detail: "Method not allowed" });
+export default async function handler(request) {
+  if (request.method !== "POST") {
+    return new Response(JSON.stringify({ success: false, detail: "Method not allowed" }), {
+      status: 405,
+      headers: { "content-type": "application/json" },
+    });
   }
 
   try {
@@ -13,30 +16,40 @@ export default async function handler(req, res) {
     const setCookie = initResp.headers.get("set-cookie") || "";
     const cookie = setCookie.split(";")[0] || "";
 
-    // Step 2: read raw body and forward as multipart with field name "files"
-    const chunks = [];
-    for await (const chunk of req) chunks.push(chunk);
-    const rawBody = Buffer.concat(chunks);
-    const contentType = req.headers["content-type"] || "";
+    // Step 2: parse incoming FormData (field: "file") → rebuild with "files"
+    const incoming = await request.formData();
+    const file = incoming.get("file");
+    if (!file) {
+      return new Response(JSON.stringify({ success: false, detail: "No file provided" }), {
+        status: 400,
+        headers: { "content-type": "application/json" },
+      });
+    }
+
+    const uploadForm = new FormData();
+    uploadForm.append("files", file, file.name || "image.jpg");
 
     const uploadResp = await fetch(`${HF_SPACE_URL}/api/photos/upload`, {
       method: "POST",
-      headers: {
-        "content-type": contentType,
-        ...(cookie ? { cookie } : {}),
-      },
-      body: rawBody,
+      headers: cookie ? { cookie } : {},
+      body: uploadForm,
     });
 
     if (!uploadResp.ok) {
       const text = await uploadResp.text();
-      return res.status(502).json({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` });
+      return new Response(JSON.stringify({ success: false, detail: `Upload failed: ${text.slice(0, 300)}` }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     const uploadJson = await uploadResp.json();
     const ids = uploadJson.ids || [];
     if (!ids.length) {
-      return res.status(502).json({ success: false, detail: "No photo id returned" });
+      return new Response(JSON.stringify({ success: false, detail: "No photo id returned" }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     // Step 3: analyze
@@ -51,19 +64,28 @@ export default async function handler(req, res) {
 
     if (!analyzeResp.ok) {
       const text = await analyzeResp.text();
-      return res.status(502).json({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` });
+      return new Response(JSON.stringify({ success: false, detail: `Analyze failed: ${text.slice(0, 300)}` }), {
+        status: 502,
+        headers: { "content-type": "application/json" },
+      });
     }
 
     const analysisJson = await analyzeResp.json();
     const predictions = analysisJson.predictions || [];
 
-    return res.status(200).json({
+    return new Response(JSON.stringify({
       success: true,
       top_prediction: predictions[0] || null,
       predictions,
+    }), {
+      status: 200,
+      headers: { "content-type": "application/json" },
     });
 
   } catch (err) {
-    return res.status(500).json({ success: false, detail: String(err) });
+    return new Response(JSON.stringify({ success: false, detail: String(err) }), {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    });
   }
 }
