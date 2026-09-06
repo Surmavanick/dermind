@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 const AUTH_KEY = "doctor_auth_session";
 
 const USERS: Record<string, string> = {
-  "DR-1024": "dermind2024",
+  "DR-1024": "dermio2024",
   "testuser": "test123",
 };
 

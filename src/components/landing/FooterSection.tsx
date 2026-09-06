@@ -1,16 +1,4 @@
-const DermindLogo = () => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" width="18" height="18">
-    <path d="M4 10V4h6"/>
-    <path d="M22 4h6v6"/>
-    <path d="M28 22v6h-6"/>
-    <path d="M10 28H4v-6"/>
-    <circle cx="16" cy="15" r="7"/>
-    <circle cx="13.5" cy="13.5" r="0.9" fill="currentColor" stroke="none"/>
-    <circle cx="18.5" cy="13.5" r="0.9" fill="currentColor" stroke="none"/>
-    <path d="M13.5 17.5c.7.6 1.6.9 2.5.9s1.8-.3 2.5-.9"/>
-    <line x1="9" y1="15" x2="23" y2="15" strokeWidth="1" opacity="0.5" strokeDasharray="2 1"/>
-  </svg>
-);
+import DermioLogo from "@/components/DermioLogo";
 
 const footerLinks = {
   Product: ["Technology", "Clinical Validation", "Pricing", "API Docs"],
@@ -26,9 +14,9 @@ const FooterSection = () => {
           <div>
             <div className="flex items-center gap-2 mb-4">
               <div className="w-8 h-8 rounded-lg gradient-clinical flex items-center justify-center">
-                <DermindLogo />
+                <DermioLogo />
               </div>
-              <span className="font-display font-bold text-background text-lg">Dermind</span>
+              <span className="font-display font-bold text-background text-lg">Dermio</span>
             </div>
             <p className="text-sm text-background/50 leading-relaxed">
               AI-powered dermatological screening and risk assessment for clinical professionals.
@@ -53,7 +41,7 @@ const FooterSection = () => {
             ⚕️ This AI system is intended for screening and educational support. It is not a substitute for professional medical evaluation. Always consult a board-certified dermatologist for clinical diagnosis and treatment decisions.
           </p>
           <p className="text-xs text-background/20 text-center mt-4">
-            © {new Date().getFullYear()} Dermind. All rights reserved.
+            © {new Date().getFullYear()} Dermio. All rights reserved.
           </p>
         </div>
       </div>
