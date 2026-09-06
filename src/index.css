@@ -163,3 +163,18 @@
     border-color: hsl(var(--clinical-red));
   }
 }
+
+@layer utilities {
+  .dash-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: hsl(210 20% 82%) transparent;
+  }
+  .dash-scroll::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .dash-scroll::-webkit-scrollbar-thumb {
+    background: hsl(210 20% 82%);
+    border-radius: 9999px;
+  }
+}

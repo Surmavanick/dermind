@@ -1,8 +1,29 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import { useNavigate } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
-import { Aperture, CheckCircle2, ClipboardList, Layers, Loader2, Sun, UploadCloud, X, Zap } from "lucide-react";
+import {
+  AlertCircle,
+  AlertTriangle,
+  Aperture,
+  Check,
+  ClipboardList,
+  FileText,
+  ImagePlus,
+  Layers,
+  Loader2,
+  LogOut,
+  RotateCcw,
+  ScanSearch,
+  ShieldCheck,
+  Sun,
+  UploadCloud,
+  User,
+  X,
+  Zap,
+} from "lucide-react";
 import { Button } from "@/components/ui/button";
+import DermioLogo from "@/components/DermioLogo";
 
 const AUTH_KEY = "doctor_auth_session";
 
@@ -390,11 +411,11 @@ const buildSegmentationLayers = async (src: string): Promise<SegmentationLayers 
 /* ------------------------------------------------------------------ */
 
 const inputClass =
-  "w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition";
+  "w-full h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-clinical-blue/25 focus:border-clinical-blue transition";
 
 const Field = ({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) => (
   <label className={`block ${className}`}>
-    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1">{label}</span>
+    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">{label}</span>
     {children}
   </label>
 );
@@ -410,9 +431,9 @@ const ChipGroup = ({
   value: string[];
   onToggle: (opt: string) => void;
 }) => (
-  <div className="mt-3">
-    <span className="block text-[11px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">{label}</span>
-    <div className="flex flex-wrap gap-1.5">
+  <div className="mt-2.5">
+    <span className="block text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1">{label}</span>
+    <div className="flex flex-wrap gap-1">
       {options.map((opt) => {
         const on = value.includes(opt);
         return (
@@ -420,8 +441,8 @@ const ChipGroup = ({
             type="button"
             key={opt}
             onClick={() => onToggle(opt)}
-            className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
-              on ? "bg-blue-600 border-blue-600 text-white" : "bg-white border-slate-200 text-slate-600 hover:border-blue-300"
+            className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+              on ? "bg-clinical-blue border-clinical-blue text-white" : "bg-white border-slate-200 text-slate-600 hover:border-clinical-blue/60"
             }`}
           >
             {opt}
@@ -433,23 +454,76 @@ const ChipGroup = ({
 );
 
 /* ------------------------------------------------------------------ */
+/* Malignancy risk banding                                             */
+/* ------------------------------------------------------------------ */
+
+const MALIGNANT_LABELS = ["Melanoma", "Basal Cell Carcinoma", "Squamous Cell Carcinoma", "Merkel Cell Carcinoma"];
+
+const malignancyScore = (preds: Prediction[]) =>
+  clamp(preds.filter((p) => MALIGNANT_LABELS.includes(p.label)).reduce((sum, p) => sum + p.score, 0), 0, 1);
+
+type RiskTone = "red" | "amber" | "green";
+
+const riskBand = (score: number): { label: string; tone: RiskTone; advice: string } =>
+  score >= 0.5
+    ? { label: "High", tone: "red", advice: "Suspicious pattern. Consider excision or specialist referral." }
+    : score >= 0.2
+      ? { label: "Moderate", tone: "amber", advice: "Borderline pattern. Short-interval follow-up recommended." }
+      : { label: "Low", tone: "green", advice: "Inconspicuous pattern. Routine monitoring." };
+
+const RISK_TONES: Record<RiskTone, { chip: string; bar: string; text: string; icon: LucideIcon }> = {
+  red: { chip: "bg-rose-50 text-rose-700 border-rose-200", bar: "bg-rose-500", text: "text-rose-700", icon: AlertTriangle },
+  amber: { chip: "bg-amber-50 text-amber-700 border-amber-200", bar: "bg-amber-500", text: "text-amber-700", icon: AlertCircle },
+  green: { chip: "bg-emerald-50 text-emerald-700 border-emerald-200", bar: "bg-emerald-500", text: "text-emerald-700", icon: ShieldCheck },
+};
+
+const SectionTitle = ({ icon: Icon, title, right }: { icon: LucideIcon; title: string; right?: ReactNode }) => (
+  <div className="flex items-center justify-between gap-2">
+    <h2 className="text-[13px] font-semibold text-slate-900 flex items-center gap-1.5">
+      <Icon className="w-3.5 h-3.5 text-clinical-blue" />
+      {title}
+    </h2>
+    {right}
+  </div>
+);
+
+/* ------------------------------------------------------------------ */
 /* Dashboard                                                           */
 /* ------------------------------------------------------------------ */
 
+type ViewKey = "ch1" | "ch2" | "ch3" | "fused" | "heatmap" | "segmentation";
+
+interface ViewDef {
+  key: ViewKey;
+  label: string;
+  caption: string;
+  stageReq: number;
+  src: string | null;
+  channel?: ChannelDef;
+}
+
+const STAGE_VIEW: Record<number, ViewKey> = { 2: "fused", 3: "heatmap", 4: "segmentation" };
+const STEP_LABELS = ["Channels", "Fusion", "Heatmap", "Segmentation"];
+
 const Dashboard = () => {
+  const navigate = useNavigate();
   const [slots, setSlots] = useState<ChannelSlot[]>([null, null, null]);
   const [fusedPreview, setFusedPreview] = useState<string | null>(null);
   const [anamnesis, setAnamnesis] = useState<Anamnesis>(EMPTY_ANAMNESIS);
-  const [status, setStatus] = useState("Waiting for spectral channels...");
+  const [status, setStatus] = useState("Waiting for spectral channels.");
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState(0);
   const [analysisStarted, setAnalysisStarted] = useState(false);
   const [segmentationLayers, setSegmentationLayers] = useState<SegmentationLayers | null>(null);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [top, setTop] = useState<Prediction | null>(null);
+  const [riskScore, setRiskScore] = useState<number | null>(null);
   const [channelResults, setChannelResults] = useState<ChannelResult[]>([]);
   const [fusionInfo, setFusionInfo] = useState<{ used: number; total: number } | null>(null);
+  const [view, setView] = useState<ViewKey>("ch1");
+  const [doctorId, setDoctorId] = useState("");
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+  const anamnesisRef = useRef<HTMLElement | null>(null);
   const slotsRef = useRef<ChannelSlot[]>(slots);
   const stageTimersRef = useRef<number[]>([]);
   const analysisRunRef = useRef(0);
@@ -461,9 +535,15 @@ const Dashboard = () => {
   const anamnesisRows = anamnesisEntries(anamnesis);
 
   useEffect(() => {
+    const raw = localStorage.getItem(AUTH_KEY);
     if (!localStorage.getItem(AUTH_KEY)) {
       window.location.href = "/doctor-login";
       return;
+    }
+    try {
+      setDoctorId(String(JSON.parse(raw || "{}").doctorId || ""));
+    } catch {
+      setDoctorId("");
     }
     // Pre-warm HF Space so it's ready when user clicks Analyze
     fetch("/api/hf/wake", { method: "GET" }).catch(() => {});
@@ -513,6 +593,30 @@ const Dashboard = () => {
     };
   }, [fusedPreview]);
 
+  const views: ViewDef[] = [
+    ...CHANNELS.map((ch, i): ViewDef => ({
+      key: `ch${ch.id}` as ViewKey,
+      label: ch.name,
+      caption: ch.detects,
+      stageReq: 1,
+      src: slots[i]?.preview ?? null,
+      channel: ch,
+    })),
+    { key: "fused", label: "Fused map", caption: "Three spectral layers merged into one digital map", stageReq: 2, src: fusedPreview },
+    { key: "heatmap", label: "Heatmap", caption: "Inflammation and vascular signal on the fused map", stageReq: 3, src: fusedPreview },
+    { key: "segmentation", label: "Segmentation", caption: "Lesion zones on the fused map", stageReq: 4, src: fusedPreview },
+  ];
+  const isAvailable = (v: ViewDef) => Boolean(v.src) && (v.stageReq === 1 || (analysisStarted && stage >= v.stageReq));
+  const activeView = views.find((v) => v.key === view) ?? views[0];
+  const activeAvailable = isAvailable(activeView);
+
+  useEffect(() => {
+    if (activeAvailable) return;
+    const fallback = views.find(isAvailable);
+    if (fallback && fallback.key !== view) setView(fallback.key);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [previewKey, fusedPreview, stage, analysisStarted]);
+
   const clearStageTimers = () => {
     stageTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     stageTimersRef.current = [];
@@ -526,6 +630,7 @@ const Dashboard = () => {
     setStage(0);
     setPredictions([]);
     setTop(null);
+    setRiskScore(null);
     setChannelResults([]);
     setFusionInfo(null);
   };
@@ -548,12 +653,9 @@ const Dashboard = () => {
       });
       return next;
     });
+    setView(`ch${startIdx + 1}` as ViewKey);
     const ch = CHANNELS[startIdx];
-    setStatus(
-      entries.length > 1
-        ? `Loaded ${entries.length} channel images (${ch.short} onward).`
-        : `${ch.short} · ${ch.name} ready: ${entries[0].file.name}`
-    );
+    setStatus(entries.length > 1 ? `Loaded ${entries.length} channel images.` : `${ch.short} ${ch.name} ready.`);
   };
 
   const removeChannel = (idx: number) => {
@@ -587,17 +689,19 @@ const Dashboard = () => {
     setAnalysisStarted(true);
     setStage(1);
     setTop(null);
+    setRiskScore(null);
     setPredictions([]);
     setChannelResults([]);
     setFusionInfo(null);
-    setStatus("Stage 1/4: Registering spectral channels...");
+    setView("ch1");
+    setStatus("Registering spectral channels.");
 
     const timeline = [
-      { at: 1200, stage: 1, text: "Stage 1/4: Registering 3 spectral channels..." },
-      { at: 3600, stage: 2, text: "Stage 2/4: Fusing layers into unified digital map..." },
-      { at: 6200, stage: 3, text: "Stage 3/4: Mapping inflammation and vascular signal..." },
-      { at: 8600, stage: 4, text: "Stage 4/4: Segmenting lesion zones..." },
-      { at: 10000, stage: 4, text: "Combining channel evaluations..." },
+      { at: 1200, stage: 1, text: "Registering 3 spectral channels." },
+      { at: 3600, stage: 2, text: "Fusing layers into unified digital map." },
+      { at: 6200, stage: 3, text: "Mapping inflammation and vascular signal." },
+      { at: 8600, stage: 4, text: "Segmenting lesion zones." },
+      { at: 10000, stage: 4, text: "Combining channel evaluations." },
     ] as const;
 
     timeline.forEach((entry) => {
@@ -605,6 +709,8 @@ const Dashboard = () => {
         if (analysisRunRef.current !== runId) return;
         setStage(entry.stage);
         setStatus(entry.text);
+        const nextView = STAGE_VIEW[entry.stage];
+        if (nextView) setView(nextView);
       }, entry.at);
       stageTimersRef.current.push(timerId);
     });
@@ -654,20 +760,17 @@ const Dashboard = () => {
       const topPred = payload.top_prediction || preds[0] || null;
       const used = payload.fusion?.channels_used?.length ?? (payload.channels?.filter((c) => c.predictions?.length).length ?? 0);
       const total = payload.fusion?.channels_total ?? CHANNELS.length;
-      setPredictions(preds.slice(0, 8));
+      setPredictions(preds.slice(0, 6));
       setTop(topPred);
+      setRiskScore(topPred ? malignancyScore(preds) : null);
       setChannelResults(payload.channels ?? []);
       setFusionInfo({ used, total });
-      setStatus(
-        topPred
-          ? `Combined evaluation complete: ${used}/${total} spectral channels fused.`
-          : "Analysis complete. No predictions returned."
-      );
+      setStatus(topPred ? `Combined evaluation complete (${used}/${total} channels).` : "Analysis complete. No predictions returned.");
     } catch (e: unknown) {
       if (analysisRunRef.current !== runId) return;
       const message = e instanceof Error ? e.message : "Error";
       if (message === "LOCAL_API_NOT_AVAILABLE") {
-        setStatus("Backend API route /api/hf/analyze is not running in this environment. For local testing run `vercel dev`; on Vercel deploy this route works automatically.");
+        setStatus("Backend route /api/hf/analyze is not available in this environment. Deploy on Vercel or run `vercel dev`.");
       } else {
         setStatus(`Error: ${message}`);
       }
@@ -688,16 +791,28 @@ const Dashboard = () => {
       return [null, null, null];
     });
     setSegmentationLayers(null);
-    setStatus("Waiting for spectral channels...");
+    setView("ch1");
+    setStatus("Waiting for spectral channels.");
     inputRefs.current.forEach((input) => {
       if (input) input.value = "";
     });
+  };
+
+  const handleLogout = () => {
+    localStorage.removeItem(AUTH_KEY);
+    navigate("/doctor-login");
+  };
+
+  const focusAnamnesis = () => {
+    anamnesisRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    anamnesisRef.current?.querySelector("input")?.focus();
   };
 
   const handleDownloadPDF = () => {
     if (!top) return;
     const desc = DISEASE_REPORTS[top.label] || `Detected: ${top.label}`;
     const date = new Date().toLocaleString();
+    const band = riskScore !== null ? riskBand(riskScore) : null;
     const win = window.open("", "_blank");
     if (!win) return;
 
@@ -734,12 +849,13 @@ const Dashboard = () => {
       </style></head>
       <body>
         <h1>Dermio — Multispectral Skin Scan Report</h1>
-        <div class="section"><div class="label">Report Generated</div><div>${date}</div></div>
+        <div class="section"><div class="label">Report Generated</div><div>${date}${doctorId ? ` · Doctor ${escapeHtml(doctorId)}` : ""}</div></div>
         <div class="section"><div class="label">Patient Anamnesis</div>${anamnesisHtml}</div>
         <div class="section">
           <div class="label">Combined Result</div>
           <div class="value">${escapeHtml(top.label)}</div>
           <div>Confidence: <strong>${(top.score * 100).toFixed(2)}%</strong></div>
+          ${band ? `<div>Malignancy risk: <strong>${band.label}</strong> (${(riskScore! * 100).toFixed(0)}% malignant-class probability). ${escapeHtml(band.advice)}</div>` : ""}
           <div class="muted">Fused from ${fusionInfo ? `${fusionInfo.used}/${fusionInfo.total}` : "3/3"} spectral channels (non-polarized, polarized, UV / blue light) into a unified digital map.</div>
         </div>
         <div class="section">
@@ -758,432 +874,464 @@ const Dashboard = () => {
   };
 
   const report = top ? DISEASE_REPORTS[top.label] || `Detected condition: ${top.label}. Please consult a dermatologist.` : null;
+  const band = riskScore !== null ? riskBand(riskScore) : null;
+  const tone = band ? RISK_TONES[band.tone] : null;
+  const isCurrentStageView = loading && stage === activeView.stageReq;
+  const statusTone = loading ? "bg-sky-50 text-clinical-blue border-sky-200" : top ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600 border-slate-200";
+  const statusLabel = loading ? "Analyzing" : top ? "Complete" : allChannelsReady ? "Ready" : "Awaiting input";
 
-  const stageLabels = ["Channels", "Fusion", "Heatmap", "Segmentation"];
-
-  type Tile = {
-    key: string;
-    title: string;
-    caption: string;
-    src: string | null;
-    stageReq: number;
-    kind: "channel" | "fused" | "heatmap" | "segmentation";
-    channel?: ChannelDef;
-  };
-
-  const tiles: Tile[] = [
-    ...CHANNELS.map((ch, i): Tile => ({
-      key: `ch${ch.id}-${previewKey}`,
-      title: `1. ${ch.short} · ${ch.name}`,
-      caption: ch.detects,
-      src: slots[i]?.preview ?? null,
-      stageReq: 1,
-      kind: "channel",
-      channel: ch,
-    })),
-    { key: `fused-${previewKey}`, title: "2. Unified Digital Map", caption: "Three spectral layers fused into one map", src: fusedPreview, stageReq: 2, kind: "fused" },
-    { key: `heat-${previewKey}`, title: "3. Heatmap", caption: "Inflammation and vascular signal", src: fusedPreview, stageReq: 3, kind: "heatmap" },
-    { key: `seg-${previewKey}`, title: "4. Segmentation", caption: "Lesion zones on the fused map", src: fusedPreview, stageReq: 4, kind: "segmentation" },
-  ];
+  const panel = "bg-white border border-slate-200/80 rounded-xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]";
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 px-4 sm:px-6 py-6">
-      <div className="max-w-7xl mx-auto">
-        <main className="grid grid-cols-1 lg:grid-cols-3 gap-5 items-start">
-          {/* Col 1: Anamnesis + Capture */}
-          <div className="lg:col-span-1 space-y-5">
-            <header>
-              <p className="text-sm font-semibold tracking-wider uppercase text-slate-500 mb-1">Multispectral Inference Dashboard</p>
-              <h1 className="text-3xl lg:text-4xl font-bold text-slate-900">Skin Scan <span className="text-blue-600">Dermio</span></h1>
-              <p className="text-slate-500 text-sm mt-1.5">
-                Capture three spectral channels (non-polarized, polarized, UV / blue light). Dermio fuses their layers into one digital map and returns a combined evaluation.
-              </p>
-            </header>
-
-            {/* Patient anamnesis */}
-            <div className="bg-white border border-slate-200/60 rounded-[20px] shadow-sm p-5">
-              <div className="flex items-center justify-between mb-1">
-                <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-                  <ClipboardList className="w-5 h-5 text-blue-600" />
-                  1. Patient Anamnesis
-                </h2>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${anamnesisRows.length ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                  {anamnesisRows.length ? "Recorded" : "Not recorded"}
-                </span>
-              </div>
-              <p className="text-sm text-slate-500 mb-4">History is attached to the scan and included in the report.</p>
-
-              <div className="grid grid-cols-2 gap-3">
-                <Field label="Patient ID">
-                  <input className={inputClass} value={anamnesis.patientId} onChange={(e) => setAnamnesis((p) => ({ ...p, patientId: e.target.value }))} placeholder="e.g. P-0412" />
-                </Field>
-                <Field label="Age">
-                  <input className={inputClass} type="number" min={0} max={120} value={anamnesis.age} onChange={(e) => setAnamnesis((p) => ({ ...p, age: e.target.value }))} placeholder="Years" />
-                </Field>
-                <Field label="Sex">
-                  <select className={inputClass} value={anamnesis.sex} onChange={(e) => setAnamnesis((p) => ({ ...p, sex: e.target.value }))}>
-                    <option value="">Select</option>
-                    {SEX_OPTIONS.map((opt) => (
-                      <option key={opt} value={opt}>{opt}</option>
-                    ))}
-                  </select>
-                </Field>
-                <Field label="Lesion site">
-                  <input className={inputClass} value={anamnesis.site} onChange={(e) => setAnamnesis((p) => ({ ...p, site: e.target.value }))} placeholder="e.g. left forearm" />
-                </Field>
-                <Field label="Duration / evolution" className="col-span-2">
-                  <input className={inputClass} value={anamnesis.duration} onChange={(e) => setAnamnesis((p) => ({ ...p, duration: e.target.value }))} placeholder="e.g. 3 weeks, slowly growing" />
-                </Field>
-              </div>
-
-              <ChipGroup label="Symptoms" options={SYMPTOM_OPTIONS} value={anamnesis.symptoms} onToggle={(opt) => toggleListValue("symptoms", opt)} />
-              <ChipGroup label="Risk factors" options={RISK_OPTIONS} value={anamnesis.riskFactors} onToggle={(opt) => toggleListValue("riskFactors", opt)} />
-
-              <Field label="Notes" className="mt-3">
-                <textarea className={`${inputClass} resize-none`} rows={2} value={anamnesis.notes} onChange={(e) => setAnamnesis((p) => ({ ...p, notes: e.target.value }))} placeholder="Previous treatments, medications, relevant history..." />
-              </Field>
-            </div>
-
-            {/* Spectral capture */}
-            <div className="bg-white border border-slate-200/60 rounded-[20px] shadow-sm p-5">
-              <div className="flex items-center justify-between mb-1">
-                <h2 className="text-lg font-semibold text-slate-900 flex items-center gap-2">
-                  <Layers className="w-5 h-5 text-blue-600" />
-                  2. Spectral Capture
-                </h2>
-                <span className={`text-[10px] px-2 py-0.5 rounded-full ${allChannelsReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>
-                  {loadedCount}/{CHANNELS.length} channels
-                </span>
-              </div>
-              <p className="text-sm text-slate-500 mb-4">Drop one photo per channel, or drop all three onto Ch 1.</p>
-
-              <div className="space-y-2.5 mb-4">
-                {CHANNELS.map((ch, idx) => {
-                  const slot = slots[idx];
-                  const Icon = ch.icon;
-                  return (
-                    <label
-                      key={ch.id}
-                      className={`relative flex items-center gap-3 border-2 border-dashed rounded-2xl px-3 py-2.5 cursor-pointer group transition-all duration-300 ${
-                        slot ? "border-slate-200 bg-slate-50/70 hover:border-blue-400" : "border-slate-300 bg-white hover:border-blue-500 hover:bg-slate-50"
-                      }`}
-                      onDragOver={(e) => e.preventDefault()}
-                      onDrop={(e) => {
-                        e.preventDefault();
-                        if (e.dataTransfer.files?.length) assignFiles(idx, e.dataTransfer.files);
-                      }}
-                    >
-                      <input
-                        ref={(el) => {
-                          inputRefs.current[idx] = el;
-                        }}
-                        type="file"
-                        accept="image/*"
-                        multiple={idx === 0}
-                        className="hidden"
-                        onChange={(e) => {
-                          if (e.target.files?.length) assignFiles(idx, e.target.files);
-                        }}
-                      />
-                      <div className="w-14 h-14 shrink-0 rounded-xl overflow-hidden bg-slate-100 border border-slate-200/80 flex items-center justify-center">
-                        {slot ? (
-                          <img src={slot.preview} alt={ch.name} className="w-full h-full object-cover" />
-                        ) : (
-                          <UploadCloud className="w-6 h-6 text-slate-400 group-hover:text-blue-600 transition-colors" />
-                        )}
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${ch.badge}`}>
-                            <Icon className="w-3 h-3" />
-                            {ch.short}
-                          </span>
-                          <span className="text-sm font-semibold text-slate-700 truncate">{ch.name}</span>
-                        </div>
-                        <p className="text-[11px] text-slate-500 leading-snug mt-0.5">{ch.detects}</p>
-                        <p className="text-[11px] text-slate-400 truncate mt-0.5">{slot ? slot.file.name : "Drop image or click to browse"}</p>
-                      </div>
-                      {slot ? (
-                        <button
-                          type="button"
-                          aria-label={`Remove ${ch.name} image`}
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            removeChannel(idx);
-                          }}
-                          className="shrink-0 p-1.5 rounded-full text-slate-400 hover:text-red-600 hover:bg-red-50 transition-colors"
-                        >
-                          <X className="w-4 h-4" />
-                        </button>
-                      ) : (
-                        <span className="shrink-0 text-[10px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">Empty</span>
-                      )}
-                    </label>
-                  );
-                })}
-              </div>
-
-              <div className="flex flex-col sm:flex-row gap-3">
-                <Button disabled={!allChannelsReady || loading} onClick={handleAnalyze} className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-base py-3 px-6 transition-all duration-300 shadow-sm hover:shadow-md">
-                  {loading ? "Analyzing..." : "Analyze"}
-                </Button>
-                <Button variant="outline" disabled={!loadedCount && !loading} onClick={handleClear} className="w-full bg-transparent hover:bg-slate-100 border-slate-300 text-slate-700 rounded-xl text-base py-3 px-6 transition-all duration-300">
-                  Clear
-                </Button>
-              </div>
-              {!allChannelsReady && (
-                <p className="text-[11px] text-slate-400 mt-2">Upload all three spectral channels to enable the combined analysis.</p>
-              )}
-
-              <div className="mt-4 border-t border-slate-100 pt-3">
-                <h3 className="text-sm font-semibold text-slate-700">Status</h3>
-                <p className="text-sm text-slate-500 mt-1">{status}</p>
-              </div>
-
-              {top && (
-                <div className="mt-4 border-t border-slate-100 pt-3 space-y-2">
-                  <div className="bg-blue-50 border border-blue-200/80 rounded-xl px-4 py-3">
-                    <p className="text-[10px] font-semibold uppercase tracking-wider text-blue-500 mb-0.5">Combined Prediction</p>
-                    <p className="text-base font-bold text-slate-800">{top.label}</p>
-                    <p className="text-sm text-blue-600 font-medium">{(top.score * 100).toFixed(2)}%</p>
-                  </div>
-                  {predictions.slice(1, 4).map((p) => (
-                    <div key={p.label} className="flex justify-between items-center text-xs px-3 py-1.5 rounded-lg bg-slate-50 border border-slate-200/60">
-                      <span className="text-slate-600 font-medium">{p.label}</span>
-                      <span className="text-slate-400 font-mono">{(p.score * 100).toFixed(2)}%</span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
+    <div className="min-h-dvh lg:h-dvh lg:overflow-hidden bg-[#F3F6FA] text-[13px] text-slate-800 flex flex-col font-sans">
+      {/* Top bar with patient banner */}
+      <header className="h-12 shrink-0 bg-white border-b border-slate-200 px-3 flex items-center gap-3">
+        <div className="flex items-center gap-2 shrink-0">
+          <div className="w-7 h-7 rounded-md gradient-clinical text-white flex items-center justify-center">
+            <DermioLogo width={16} height={16} />
           </div>
+          <div className="leading-tight">
+            <div className="font-display font-bold text-[13px] text-slate-900">Dermio</div>
+            <div className="text-[10px] text-slate-500 -mt-0.5 hidden sm:block">Multispectral Skin Scan</div>
+          </div>
+        </div>
+        <div className="h-6 w-px bg-slate-200 shrink-0" />
+        <button type="button" onClick={focusAnamnesis} className="flex items-center gap-2 min-w-0 flex-1 text-left rounded-md px-1.5 py-1 hover:bg-slate-50 transition-colors" title="Edit patient anamnesis">
+          <User className="w-4 h-4 text-slate-400 shrink-0" />
+          {anamnesis.patientId.trim() ? (
+            <span className="font-semibold text-slate-900 truncate">{anamnesis.patientId.trim()}</span>
+          ) : (
+            <span className="text-slate-400 truncate">No patient · add anamnesis</span>
+          )}
+          <div className="hidden md:flex items-center gap-1 min-w-0">
+            {[anamnesis.age.trim() && `${anamnesis.age.trim()} y`, anamnesis.sex, anamnesis.site.trim(), anamnesis.duration.trim()]
+              .filter(Boolean)
+              .map((chip) => (
+                <span key={chip as string} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 truncate max-w-[160px]">{chip}</span>
+              ))}
+          </div>
+        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <span className={`text-[11px] font-medium px-2 py-0.5 rounded-full border flex items-center gap-1 ${statusTone}`}>
+            {loading && <Loader2 className="w-3 h-3 animate-spin" />}
+            {statusLabel}
+          </span>
+          {doctorId && <span className="text-[11px] text-slate-500 hidden md:inline">Dr. {doctorId}</span>}
+          <Button variant="ghost" size="sm" className="h-8 px-2 text-slate-500 hover:text-slate-900" onClick={handleLogout} title="Log out">
+            <LogOut className="w-4 h-4" />
+          </Button>
+        </div>
+      </header>
 
-          {/* Col 2: Pipeline preview */}
-          <div className="bg-white border border-slate-200/60 rounded-[20px] shadow-sm p-5 lg:col-span-2 min-h-[610px]">
-            <div className="mb-3">
-              <div className="flex items-center justify-between mb-2">
-                <h2 className="text-lg font-semibold text-slate-900">3. Digital Map Pipeline</h2>
-                <span className="text-xs text-slate-500">3 channels → 1 map → combined evaluation</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-1">
-                {[1, 2, 3, 4].map((idx) => {
-                  const done = top ? stage >= idx : stage > idx;
-                  const active = loading && stage === idx;
-                  return (
-                    <div
-                      key={`stage-pill-${idx}`}
-                      className={`rounded-lg border px-2 py-1.5 text-[11px] font-medium flex items-center gap-1.5 ${
-                        done
-                          ? "border-emerald-200 bg-emerald-50 text-emerald-700"
-                          : active
-                            ? "border-blue-200 bg-blue-50 text-blue-700"
-                            : "border-slate-200 bg-slate-50 text-slate-500"
-                      }`}
-                    >
-                      {done ? <CheckCircle2 className="h-3.5 w-3.5" /> : active ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
-                      <span>Stage {idx} · {stageLabels[idx - 1]}</span>
-                    </div>
-                  );
-                })}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-              {tiles.map((tile) => {
-                const hasSrc = Boolean(tile.src);
-                const isActive = hasSrc && analysisStarted && stage >= tile.stageReq;
-                const isCurrent = loading && stage === tile.stageReq;
-                const canShow = hasSrc && (tile.stageReq === 1 || (analysisStarted && stage >= tile.stageReq));
-                const isReady = hasSrc && tile.stageReq === 1 && !analysisStarted;
-                const stateLabel = isReady ? "Ready" : isActive ? "Active" : "Pending";
-                const emptyText = tile.kind === "channel"
-                  ? `Waiting for ${tile.channel?.short}`
-                  : hasSrc
-                    ? "Starts after Analyze"
-                    : "Waiting for channels";
-                const ChannelIcon = tile.channel?.icon;
+      <div className="flex-1 min-h-0 p-3 grid gap-3 grid-cols-1 md:grid-cols-[264px_1fr] lg:grid-cols-[264px_1fr_288px] xl:grid-cols-[288px_1fr_312px] md:grid-rows-[auto_auto] lg:grid-rows-1">
+        {/* Left: capture + anamnesis */}
+        <aside className={`${panel} md:row-span-2 lg:row-span-1 lg:min-h-0 lg:overflow-y-auto dash-scroll p-3 flex flex-col gap-3`}>
+          <section>
+            <SectionTitle
+              icon={Layers}
+              title="Spectral capture"
+              right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${allChannelsReady ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{loadedCount}/{CHANNELS.length}</span>}
+            />
+            <div className="space-y-1.5 mt-2">
+              {CHANNELS.map((ch, idx) => {
+                const slot = slots[idx];
+                const Icon = ch.icon;
                 return (
-                  <div
-                    key={tile.key}
-                    className={`rounded-xl border p-3 transition-all duration-300 ${
-                      isActive ? "border-slate-300 bg-white shadow-sm" : "border-slate-200 bg-slate-50/70"
+                  <label
+                    key={ch.id}
+                    className={`relative flex items-center gap-2.5 rounded-lg border px-2 py-1.5 cursor-pointer group transition-colors ${
+                      slot ? "border-slate-200 bg-white hover:border-clinical-blue/60" : "border-dashed border-slate-300 bg-slate-50/60 hover:border-clinical-blue hover:bg-sky-50/40"
                     }`}
+                    onDragOver={(e) => e.preventDefault()}
+                    onDrop={(e) => {
+                      e.preventDefault();
+                      if (e.dataTransfer.files?.length) assignFiles(idx, e.dataTransfer.files);
+                    }}
                   >
-                    <div className="mb-2 flex items-center justify-between gap-2">
-                      <div className="min-w-0">
-                        <p className="text-xs font-semibold uppercase tracking-wide text-slate-600 truncate">{tile.title}</p>
-                        <p className="text-[10px] text-slate-400 truncate">{tile.caption}</p>
+                    <input
+                      ref={(el) => {
+                        inputRefs.current[idx] = el;
+                      }}
+                      type="file"
+                      accept="image/*"
+                      multiple={idx === 0}
+                      className="hidden"
+                      onChange={(e) => {
+                        if (e.target.files?.length) assignFiles(idx, e.target.files);
+                      }}
+                    />
+                    <div className="w-10 h-10 shrink-0 rounded-md overflow-hidden bg-slate-100 border border-slate-200/80 flex items-center justify-center">
+                      {slot ? <img src={slot.preview} alt={ch.name} className="w-full h-full object-cover" /> : <UploadCloud className="w-4 h-4 text-slate-400 group-hover:text-clinical-blue transition-colors" />}
+                    </div>
+                    <div className="min-w-0 flex-1 leading-tight">
+                      <div className="flex items-center gap-1.5">
+                        <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1 py-px rounded ${ch.badge}`}>
+                          <Icon className="w-2.5 h-2.5" />
+                          {ch.short.replace(" ", "")}
+                        </span>
+                        <span className="text-xs font-semibold text-slate-800 truncate">{ch.name}</span>
                       </div>
-                      <span
-                        className={`shrink-0 text-[10px] px-2 py-0.5 rounded-full ${
-                          isActive ? "bg-emerald-100 text-emerald-700" : isReady ? "bg-blue-100 text-blue-700" : "bg-slate-200 text-slate-500"
-                        }`}
+                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{ch.detects}</p>
+                    </div>
+                    {slot ? (
+                      <button
+                        type="button"
+                        aria-label={`Remove ${ch.name} image`}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          removeChannel(idx);
+                        }}
+                        className="shrink-0 p-1 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
                       >
-                        {stateLabel}
-                      </span>
-                    </div>
-                    <div className={`aspect-[4/3] rounded-lg overflow-hidden bg-slate-100 border border-slate-200/80 relative ${isCurrent ? "ring-2 ring-blue-300/60" : ""}`}>
-                      {canShow && tile.src ? (
-                        <>
-                          <img
-                            src={tile.src}
-                            alt={tile.title}
-                            className={`w-full h-full object-cover scale-[1.02] transition-all duration-500 ${tile.kind === "heatmap" ? "saturate-110 contrast-110" : ""}`}
-                          />
-                          {isCurrent && (
-                            <>
-                              <div className="absolute inset-0 bg-blue-500/10 animate-pulse" />
-                              <div className="absolute inset-x-0 top-0 h-1 bg-gradient-to-r from-transparent via-blue-300 to-transparent animate-pulse" />
-                            </>
-                          )}
-                          {tile.kind === "channel" && tile.channel && ChannelIcon && (
-                            <span className={`absolute left-2 top-2 inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md shadow-sm ${tile.channel.badge}`}>
-                              <ChannelIcon className="w-3 h-3" />
-                              {tile.channel.name}
-                            </span>
-                          )}
-                          {tile.kind === "fused" && (
-                            <>
-                              <div className="absolute inset-0 pointer-events-none opacity-25 bg-[linear-gradient(to_right,rgba(255,255,255,0.6)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.6)_1px,transparent_1px)] bg-[size:24px_24px]" />
-                              <div className="absolute left-2 bottom-2 rounded-md bg-white/90 backdrop-blur-sm border border-white px-2 py-1 text-[10px] leading-tight text-slate-700 flex items-center gap-1.5">
-                                <Layers className="w-3 h-3 text-blue-600" />
-                                <span>{loadedCount} spectral layers merged</span>
-                              </div>
-                            </>
-                          )}
-                          {tile.kind === "heatmap" && stage >= 3 && (
-                            <div className="absolute inset-0 mix-blend-multiply">
-                              <div className="absolute top-[22%] left-[34%] w-16 h-16 rounded-full bg-red-500/60 blur-xl animate-pulse" />
-                              <div className="absolute top-[52%] left-[22%] w-20 h-14 rounded-full bg-red-500/45 blur-xl animate-pulse" />
-                              <div className="absolute top-[62%] left-[45%] w-12 h-12 rounded-full bg-red-500/45 blur-lg animate-pulse" />
-                            </div>
-                          )}
-                          {tile.kind === "segmentation" && stage >= 4 && (
-                            <>
-                              {segmentationLayers ? (
-                                <>
-                                  <img src={segmentationLayers.normalSkin} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none mix-blend-normal opacity-90" />
-                                  <img src={segmentationLayers.comedones} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none mix-blend-normal opacity-90" />
-                                  <img src={segmentationLayers.hyperPigmentation} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none mix-blend-normal opacity-90" />
-                                  <img src={segmentationLayers.activeAcne} alt="" className="absolute inset-0 w-full h-full object-cover pointer-events-none mix-blend-normal opacity-95" />
-                                  <div className="absolute left-2 bottom-2 rounded-md bg-white/90 backdrop-blur-sm border border-white px-2 py-1 text-[10px] leading-tight text-slate-700">
-                                    <div><span className="inline-block w-2 h-2 rounded-full bg-[#f04c35] mr-1 align-middle" /> Red: Damaged Area</div>
-                                    <div><span className="inline-block w-2 h-2 rounded-full bg-[#f2da3a] mr-1 align-middle" /> Yellow: Comedones</div>
-                                    <div><span className="inline-block w-2 h-2 rounded-full bg-[#9a62c9] mr-1 align-middle" /> Purple: Hyper-pigmentation</div>
-                                    <div><span className="inline-block w-2 h-2 rounded-full bg-[#8ecdf2] mr-1 align-middle" /> Light Blue: Normal Skin</div>
-                                  </div>
-                                </>
-                              ) : (
-                                <div className="absolute inset-0 bg-sky-300/20 animate-pulse" />
-                              )}
-                            </>
-                          )}
-                        </>
-                      ) : (
-                        <div className="w-full h-full flex items-center justify-center text-sm text-slate-400 text-center px-3">
-                          {emptyText}
-                        </div>
-                      )}
-                    </div>
-                  </div>
+                        <X className="w-3.5 h-3.5" />
+                      </button>
+                    ) : (
+                      <span className="shrink-0 text-[10px] text-slate-400 pr-1">Drop</span>
+                    )}
+                  </label>
                 );
               })}
             </div>
+            <div className="flex gap-2 mt-2.5">
+              <Button disabled={!allChannelsReady || loading} onClick={handleAnalyze} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold shadow-sm">
+                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanSearch className="w-4 h-4" />}
+                Analyze
+              </Button>
+              <Button variant="outline" disabled={!loadedCount && !loading} onClick={handleClear} className="h-9 w-9 p-0 rounded-lg border-slate-300 text-slate-600" title="Clear all">
+                <RotateCcw className="w-4 h-4" />
+              </Button>
+            </div>
+            <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
+              {allChannelsReady || loading || top ? status : "Drop one photo per channel, or all three onto Ch1."}
+            </p>
+          </section>
+
+          <div className="h-px bg-slate-200" />
+
+          <section ref={anamnesisRef}>
+            <SectionTitle
+              icon={ClipboardList}
+              title="Patient & anamnesis"
+              right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${anamnesisRows.length ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{anamnesisRows.length ? "Recorded" : "Optional"}</span>}
+            />
+            <div className="grid grid-cols-[1.4fr_0.8fr_1fr] gap-2 mt-2">
+              <Field label="Patient ID">
+                <input className={inputClass} value={anamnesis.patientId} onChange={(e) => setAnamnesis((p) => ({ ...p, patientId: e.target.value }))} placeholder="P-0412" />
+              </Field>
+              <Field label="Age">
+                <input className={inputClass} type="number" min={0} max={120} value={anamnesis.age} onChange={(e) => setAnamnesis((p) => ({ ...p, age: e.target.value }))} placeholder="yrs" />
+              </Field>
+              <Field label="Sex">
+                <select className={inputClass} value={anamnesis.sex} onChange={(e) => setAnamnesis((p) => ({ ...p, sex: e.target.value }))}>
+                  <option value="">–</option>
+                  {SEX_OPTIONS.map((opt) => (
+                    <option key={opt} value={opt}>{opt}</option>
+                  ))}
+                </select>
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
+              <Field label="Lesion site">
+                <input className={inputClass} value={anamnesis.site} onChange={(e) => setAnamnesis((p) => ({ ...p, site: e.target.value }))} placeholder="left forearm" />
+              </Field>
+              <Field label="Duration">
+                <input className={inputClass} value={anamnesis.duration} onChange={(e) => setAnamnesis((p) => ({ ...p, duration: e.target.value }))} placeholder="3 weeks, growing" />
+              </Field>
+            </div>
+            <ChipGroup label="Symptoms" options={SYMPTOM_OPTIONS} value={anamnesis.symptoms} onToggle={(opt) => toggleListValue("symptoms", opt)} />
+            <ChipGroup label="Risk factors" options={RISK_OPTIONS} value={anamnesis.riskFactors} onToggle={(opt) => toggleListValue("riskFactors", opt)} />
+            <Field label="Notes" className="mt-2.5">
+              <textarea className={`${inputClass} h-auto py-1.5 resize-none`} rows={2} value={anamnesis.notes} onChange={(e) => setAnamnesis((p) => ({ ...p, notes: e.target.value }))} placeholder="Previous treatments, medications, relevant history" />
+            </Field>
+          </section>
+        </aside>
+
+        {/* Center: viewer */}
+        <section className={`${panel} lg:min-h-0 flex flex-col p-3`}>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <div className="inline-flex rounded-lg bg-slate-100 p-0.5 gap-0.5">
+              {views.map((v) => {
+                const available = isAvailable(v);
+                const selected = v.key === view;
+                return (
+                  <button
+                    key={v.key}
+                    type="button"
+                    disabled={!available}
+                    onClick={() => setView(v.key)}
+                    className={`px-2.5 h-7 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${
+                      selected ? "bg-white text-slate-900 shadow-sm" : available ? "text-slate-600 hover:text-slate-900" : "text-slate-400 cursor-not-allowed"
+                    }`}
+                  >
+                    {v.channel ? v.channel.short : v.label}
+                  </button>
+                );
+              })}
+            </div>
+            <ol className="flex items-center gap-1 text-[11px]">
+              {STEP_LABELS.map((label, i) => {
+                const n = i + 1;
+                const done = top ? stage >= n : stage > n;
+                const active = loading && stage === n;
+                return (
+                  <li key={label} className="flex items-center gap-1">
+                    <span
+                      className={`w-5 h-5 rounded-full flex items-center justify-center border text-[10px] font-semibold ${
+                        done ? "bg-emerald-500 border-emerald-500 text-white" : active ? "border-clinical-blue text-clinical-blue bg-sky-50" : "border-slate-300 text-slate-400 bg-white"
+                      }`}
+                    >
+                      {done ? <Check className="w-3 h-3" /> : active ? <Loader2 className="w-3 h-3 animate-spin" /> : n}
+                    </span>
+                    <span className={`hidden xl:inline ${done || active ? "text-slate-700 font-medium" : "text-slate-400"}`}>{label}</span>
+                    {i < STEP_LABELS.length - 1 && <span className={`w-3 h-px ${done ? "bg-emerald-400" : "bg-slate-200"}`} />}
+                  </li>
+                );
+              })}
+            </ol>
           </div>
 
-          {/* Results */}
-          {top && (
-            <div className="lg:col-span-3 bg-white border border-slate-200/60 rounded-[20px] shadow-sm p-6">
-              <div className="flex flex-wrap items-center justify-between gap-2 mb-5">
-                <h2 className="text-lg font-semibold text-slate-900">4. Results</h2>
-                {fusionInfo && (
-                  <span className="text-xs px-2.5 py-1 rounded-full bg-blue-50 text-blue-700 border border-blue-200/80">
-                    Combined evaluation · {fusionInfo.used}/{fusionInfo.total} spectral channels
-                  </span>
+          <div className="relative mt-2.5 h-[46vh] md:h-auto md:aspect-[4/3] lg:aspect-auto lg:flex-1 lg:min-h-0 rounded-lg bg-slate-900 overflow-hidden flex items-center justify-center">
+            {activeAvailable && activeView.src ? (
+              <div className="relative inline-flex max-h-full max-w-full">
+                <img src={activeView.src} alt={activeView.label} className={`block max-h-full max-w-full object-contain ${activeView.key === "heatmap" ? "saturate-110 contrast-110" : ""}`} />
+                {activeView.key === "fused" && (
+                  <div className="absolute inset-0 pointer-events-none opacity-25 bg-[linear-gradient(to_right,rgba(255,255,255,0.6)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.6)_1px,transparent_1px)] bg-[size:24px_24px]" />
+                )}
+                {activeView.key === "heatmap" && stage >= 3 && (
+                  <div className="absolute inset-0 mix-blend-multiply pointer-events-none">
+                    <div className="absolute top-[22%] left-[34%] w-[22%] h-[28%] rounded-full bg-red-500/60 blur-xl animate-pulse" />
+                    <div className="absolute top-[52%] left-[22%] w-[26%] h-[22%] rounded-full bg-red-500/45 blur-xl animate-pulse" />
+                    <div className="absolute top-[62%] left-[45%] w-[16%] h-[20%] rounded-full bg-red-500/45 blur-lg animate-pulse" />
+                  </div>
+                )}
+                {activeView.key === "segmentation" && stage >= 4 && segmentationLayers && (
+                  <>
+                    <img src={segmentationLayers.normalSkin} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-50" />
+                    <img src={segmentationLayers.comedones} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-65" />
+                    <img src={segmentationLayers.hyperPigmentation} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-65" />
+                    <img src={segmentationLayers.activeAcne} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-70" />
+                  </>
+                )}
+                {isCurrentStageView && (
+                  <>
+                    <div className="absolute inset-0 bg-sky-400/10 animate-pulse pointer-events-none" />
+                    <div className="absolute inset-x-0 top-0 h-0.5 bg-gradient-to-r from-transparent via-sky-300 to-transparent animate-pulse pointer-events-none" />
+                  </>
                 )}
               </div>
+            ) : (
+              <div className="text-center px-6">
+                <div className="mx-auto w-12 h-12 rounded-xl border border-dashed border-slate-600 flex items-center justify-center mb-3">
+                  <ImagePlus className="w-5 h-5 text-slate-500" />
+                </div>
+                <p className="text-slate-300 text-sm font-medium">{activeView.src ? "Available after analysis" : "No image for this view"}</p>
+                <p className="text-slate-500 text-xs mt-1">{activeView.src ? `${activeView.label} is produced at stage ${activeView.stageReq}.` : "Add the three spectral photos in the left panel."}</p>
+              </div>
+            )}
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-                <div className="md:col-span-1">
-                  <div className="bg-slate-50 border border-slate-200/60 rounded-xl p-6 h-full">
-                    <p className="text-sm uppercase tracking-wider font-semibold text-blue-600 mb-1">Combined Prediction</p>
-                    <h3 className="text-3xl font-bold text-slate-800">{top.label}</h3>
-                    <p className="text-lg font-medium text-slate-600 mt-1">{(top.score * 100).toFixed(2)}% Confidence</p>
-                    <p className="text-xs text-slate-500 mt-3 leading-relaxed">
-                      Non-polarized, polarized and UV / blue light layers were fused into a unified digital map and evaluated together.
-                    </p>
+            {/* Viewer chrome */}
+            <div className="absolute left-2.5 top-2.5 flex items-center gap-1.5 pointer-events-none">
+              {activeView.channel ? (
+                <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded ${activeView.channel.badge}`}>
+                  <activeView.channel.icon className="w-3 h-3" />
+                  {activeView.channel.short} · {activeView.channel.name}
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded bg-white/90 text-slate-800">
+                  <Layers className="w-3 h-3 text-clinical-blue" />
+                  {activeView.label}
+                </span>
+              )}
+              <span className="text-[10px] text-slate-200/90 bg-slate-900/60 backdrop-blur-sm px-1.5 py-0.5 rounded hidden sm:inline">{activeView.caption}</span>
+            </div>
+            {activeView.key === "fused" && activeAvailable && (
+              <span className="absolute right-2.5 bottom-2.5 text-[10px] text-slate-100 bg-slate-900/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">{loadedCount} spectral layers merged</span>
+            )}
+            {activeView.key === "heatmap" && activeAvailable && stage >= 3 && (
+              <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1.5 text-[10px] text-slate-100 bg-slate-900/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">
+                <span>Low</span>
+                <span className="w-16 h-1.5 rounded-full bg-gradient-to-r from-transparent via-orange-400 to-red-500" />
+                <span>High</span>
+              </div>
+            )}
+            {activeView.key === "segmentation" && activeAvailable && stage >= 4 && (
+              <div className="absolute right-2.5 bottom-2.5 rounded bg-slate-900/70 backdrop-blur-sm px-2 py-1 text-[10px] leading-tight text-slate-100 pointer-events-none grid grid-cols-2 gap-x-3 gap-y-0.5">
+                <div><span className="inline-block w-2 h-2 rounded-full bg-[#f04c35] mr-1 align-middle" />Damaged</div>
+                <div><span className="inline-block w-2 h-2 rounded-full bg-[#f2da3a] mr-1 align-middle" />Comedones</div>
+                <div><span className="inline-block w-2 h-2 rounded-full bg-[#9a62c9] mr-1 align-middle" />Pigmentation</div>
+                <div><span className="inline-block w-2 h-2 rounded-full bg-[#8ecdf2] mr-1 align-middle" />Normal skin</div>
+              </div>
+            )}
+            {activeView.channel && slots[activeView.channel.id - 1] && (
+              <span className="absolute left-2.5 bottom-2.5 text-[10px] text-slate-300 bg-slate-900/60 px-1.5 py-0.5 rounded pointer-events-none max-w-[50%] truncate">{slots[activeView.channel.id - 1]!.file.name}</span>
+            )}
+          </div>
+
+          {/* Filmstrip */}
+          <div className="mt-2.5 grid grid-cols-6 gap-1.5 w-full max-w-[860px] mx-auto">
+            {views.map((v) => {
+              const available = isAvailable(v);
+              const selected = v.key === view;
+              const current = loading && stage === v.stageReq;
+              return (
+                <button
+                  key={v.key}
+                  type="button"
+                  disabled={!available}
+                  onClick={() => setView(v.key)}
+                  className={`group text-left rounded-md border p-1 transition-all ${
+                    selected ? "border-clinical-blue ring-1 ring-clinical-blue/40 bg-sky-50/40" : available ? "border-slate-200 hover:border-slate-300 bg-white" : "border-slate-200 bg-slate-50 cursor-not-allowed"
+                  }`}
+                >
+                  <div className="relative aspect-[4/3] rounded overflow-hidden bg-slate-200">
+                    {v.src ? (
+                      <img src={v.src} alt="" className={`w-full h-full object-cover ${available ? "" : "opacity-40 grayscale"}`} />
+                    ) : (
+                      <div className="w-full h-full flex items-center justify-center text-slate-400"><ImagePlus className="w-3.5 h-3.5" /></div>
+                    )}
+                    {current && <div className="absolute inset-0 bg-sky-400/20 animate-pulse" />}
+                    {v.key === "heatmap" && available && stage >= 3 && <div className="absolute inset-0 bg-red-500/20 mix-blend-multiply" />}
+                    {v.key === "segmentation" && available && stage >= 4 && <div className="absolute inset-0 bg-sky-400/20" />}
+                  </div>
+                  <div className="flex items-center justify-between gap-1 mt-1 px-0.5">
+                    <span className={`text-[10px] font-medium truncate ${available ? "text-slate-700" : "text-slate-400"}`}>{v.channel ? `${v.channel.short} ${v.channel.name}` : v.label}</span>
+                    {v.stageReq > 1 && (available ? <Check className="w-3 h-3 text-emerald-500 shrink-0" /> : <span className="text-[9px] text-slate-400 shrink-0">S{v.stageReq}</span>)}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+
+        {/* Right: assessment */}
+        <aside className={`${panel} md:col-start-2 lg:col-start-3 lg:min-h-0 lg:overflow-y-auto dash-scroll p-3 flex flex-col gap-3`}>
+          <SectionTitle icon={ScanSearch} title="AI assessment" right={fusionInfo && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-50 text-clinical-blue">{fusionInfo.used}/{fusionInfo.total} channels fused</span>} />
+
+          {!top && (
+            <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
+              {loading ? (
+                <div className="flex items-start gap-2">
+                  <Loader2 className="w-4 h-4 text-clinical-blue animate-spin mt-0.5 shrink-0" />
+                  <div>
+                    <p className="font-semibold text-slate-800">Analyzing</p>
+                    <p className="text-[11px] text-slate-500 mt-0.5">{status}</p>
                   </div>
                 </div>
-                <div className="md:col-span-1 space-y-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Fused ranking</p>
+              ) : (
+                <>
+                  <p className="font-semibold text-slate-800">Awaiting analysis</p>
+                  <ul className="space-y-1">
+                    {CHANNELS.map((ch, i) => (
+                      <li key={ch.id} className="flex items-center gap-2 text-[11px]">
+                        <span className={`w-4 h-4 rounded-full flex items-center justify-center border ${slots[i] ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-300 text-transparent"}`}><Check className="w-2.5 h-2.5" /></span>
+                        <span className={slots[i] ? "text-slate-700" : "text-slate-400"}>{ch.short} {ch.name}</span>
+                      </li>
+                    ))}
+                    <li className="flex items-center gap-2 text-[11px]">
+                      <span className={`w-4 h-4 rounded-full flex items-center justify-center border ${anamnesisRows.length ? "bg-emerald-500 border-emerald-500 text-white" : "border-slate-300 text-transparent"}`}><Check className="w-2.5 h-2.5" /></span>
+                      <span className={anamnesisRows.length ? "text-slate-700" : "text-slate-400"}>Anamnesis (optional)</span>
+                    </li>
+                  </ul>
+                  <p className="text-[11px] text-slate-500 leading-snug">Each spectral channel is evaluated separately; the probabilities are fused into one combined result with a malignancy risk band.</p>
+                  {status.startsWith("Error") || status.startsWith("Backend") ? <p className="text-[11px] text-rose-600 leading-snug">{status}</p> : null}
+                </>
+              )}
+            </div>
+          )}
+
+          {top && band && tone && (
+            <>
+              <div className={`rounded-lg border p-3 ${tone.chip}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-semibold uppercase tracking-wide opacity-80">Malignancy risk</span>
+                  <tone.icon className="w-4 h-4" />
+                </div>
+                <div className="flex items-baseline gap-2 mt-0.5">
+                  <span className="text-2xl font-bold font-display leading-none">{band.label}</span>
+                  <span className="text-xs font-medium opacity-80">{((riskScore ?? 0) * 100).toFixed(0)}% malignant-class probability</span>
+                </div>
+                <div className="relative mt-2.5 h-1.5 rounded-full overflow-hidden flex">
+                  <span className="h-full bg-emerald-300" style={{ width: "20%" }} />
+                  <span className="h-full bg-amber-300" style={{ width: "30%" }} />
+                  <span className="h-full bg-rose-300" style={{ width: "50%" }} />
+                  <span className="absolute top-1/2 -translate-y-1/2 -translate-x-1/2 w-2.5 h-2.5 rounded-full border-2 border-white shadow bg-slate-900" style={{ left: `${(riskScore ?? 0) * 100}%` }} />
+                </div>
+                <p className="text-[11px] mt-2 leading-snug opacity-90">{band.advice}</p>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Combined prediction</p>
+                <div className="flex items-baseline justify-between gap-2 mt-0.5">
+                  <span className="text-lg font-bold text-slate-900 leading-tight">{top.label}</span>
+                  <span className="font-mono text-sm font-semibold text-clinical-blue">{(top.score * 100).toFixed(1)}%</span>
+                </div>
+                <div className="mt-2 space-y-1.5">
                   {predictions.map((p, index) => (
-                    <div key={p.label} className={`flex justify-between items-center rounded-lg px-4 py-2.5 text-sm transition-colors duration-200 ${index === 0 ? "bg-blue-50 border border-blue-200/80" : "bg-slate-50"}`}>
-                      <span className={`font-semibold ${index === 0 ? "text-blue-800" : "text-slate-700"}`}>{index + 1}. {p.label}</span>
-                      <span className={`font-mono font-medium ${index === 0 ? "text-blue-700" : "text-slate-500"}`}>{(p.score * 100).toFixed(2)}%</span>
+                    <div key={p.label}>
+                      <div className="flex justify-between text-[11px]">
+                        <span className={index === 0 ? "font-semibold text-slate-800" : "text-slate-600"}>{p.label}</span>
+                        <span className="font-mono text-slate-500">{(p.score * 100).toFixed(1)}%</span>
+                      </div>
+                      <div className="h-1 rounded-full bg-slate-100 overflow-hidden mt-0.5">
+                        <div className={`h-full rounded-full ${index === 0 ? "bg-clinical-blue" : "bg-slate-300"}`} style={{ width: `${clamp(p.score * 100, 1, 100)}%` }} />
+                      </div>
                     </div>
                   ))}
                 </div>
-                <div className="md:col-span-1 space-y-2">
-                  <p className="text-[11px] font-semibold uppercase tracking-wide text-slate-500">Per-channel evaluation</p>
+              </div>
+
+              <div className="rounded-lg border border-slate-200 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Per-channel evaluation</p>
+                <div className="space-y-1.5">
                   {CHANNELS.map((ch) => {
                     const result = channelResults.find((c) => c.id === ch.id);
                     const topC = result?.top_prediction ?? null;
                     const Icon = ch.icon;
                     return (
-                      <div key={ch.id} className="rounded-lg border border-slate-200/60 bg-slate-50 px-3 py-2.5">
-                        <div className="flex items-center justify-between gap-2">
-                          <span className={`inline-flex items-center gap-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${ch.badge}`}>
-                            <Icon className="w-3 h-3" />
-                            {ch.short} · {ch.name}
-                          </span>
-                          <span className="text-xs font-mono text-slate-500">{topC ? `${(topC.score * 100).toFixed(1)}%` : "–"}</span>
-                        </div>
-                        <p className="text-sm font-semibold text-slate-800 mt-1">
-                          {topC ? topC.label : <span className="text-slate-400 font-normal">{result?.error ? "No result for this channel" : "Not evaluated"}</span>}
-                        </p>
-                        <p className="text-[10px] text-slate-400">{ch.detects}</p>
-                        {topC && (
-                          <div className="mt-1.5 h-1.5 rounded-full bg-slate-200 overflow-hidden">
-                            <div className="h-full bg-blue-500 rounded-full" style={{ width: `${clamp(topC.score * 100, 2, 100)}%` }} />
-                          </div>
-                        )}
+                      <div key={ch.id} className="flex items-center gap-2">
+                        <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1 py-px rounded shrink-0 ${ch.badge}`}>
+                          <Icon className="w-2.5 h-2.5" />
+                          {ch.short.replace(" ", "")}
+                        </span>
+                        <span className="text-[11px] text-slate-700 truncate flex-1">{topC ? topC.label : <span className="text-slate-400">{result?.error ? "No result" : "Not evaluated"}</span>}</span>
+                        <span className="font-mono text-[11px] text-slate-500 shrink-0">{topC ? `${(topC.score * 100).toFixed(0)}%` : "–"}</span>
                       </div>
                     );
                   })}
                 </div>
               </div>
 
-              <div className="mt-8 pt-6 border-t border-slate-200/80 grid grid-cols-1 md:grid-cols-2 gap-6">
-                <div>
-                  <h4 className="text-base font-semibold text-slate-800 mb-2 flex items-center gap-2">
-                    <ClipboardList className="w-4 h-4 text-blue-600" />
-                    Patient Anamnesis
-                  </h4>
-                  {anamnesisRows.length ? (
-                    <dl className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-1.5 text-sm">
-                      {anamnesisRows.map((row) => (
-                        <div key={row.label} className="contents">
-                          <dt className="text-slate-500">{row.label}</dt>
-                          <dd className="text-slate-800 font-medium break-words">{row.value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  ) : (
-                    <p className="text-sm text-slate-400">No anamnesis recorded. Fill in the patient history in section 1 to include it in the report.</p>
-                  )}
-                </div>
-                <div>
-                  <h4 className="text-base font-semibold text-slate-800 mb-2">Condition Information</h4>
-                  <p className="text-sm text-slate-600 leading-relaxed mb-5">{report}</p>
-                  <Button onClick={handleDownloadPDF} className="bg-blue-600 hover:bg-blue-700 text-white rounded-xl text-base py-3 px-6 transition-all duration-300 shadow-sm hover:shadow-md">
-                    Download Report PDF
-                  </Button>
-                </div>
+              <div className="rounded-lg border border-slate-200 p-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Patient anamnesis</p>
+                {anamnesisRows.length ? (
+                  <dl className="grid grid-cols-[auto,1fr] gap-x-3 gap-y-1 text-[11px]">
+                    {anamnesisRows.map((row) => (
+                      <div key={row.label} className="contents">
+                        <dt className="text-slate-500">{row.label}</dt>
+                        <dd className="text-slate-800 font-medium break-words">{row.value}</dd>
+                      </div>
+                    ))}
+                  </dl>
+                ) : (
+                  <p className="text-[11px] text-slate-400">Not recorded.</p>
+                )}
               </div>
-            </div>
+
+              {report && <p className="text-[11px] text-slate-500 leading-snug">{report}</p>}
+
+              <div className="sticky bottom-0 mt-auto -mx-3 -mb-3 px-3 py-3 bg-white border-t border-slate-100 flex gap-2">
+                <Button onClick={handleDownloadPDF} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold">
+                  <FileText className="w-4 h-4" />
+                  Report PDF
+                </Button>
+                <Button variant="outline" onClick={handleClear} className="h-9 rounded-lg border-slate-300 text-slate-600 text-[13px]">
+                  New scan
+                </Button>
+              </div>
+            </>
           )}
-        </main>
+        </aside>
       </div>
     </div>
   );
