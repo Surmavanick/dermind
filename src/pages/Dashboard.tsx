@@ -7,7 +7,10 @@ import {
   AlertTriangle,
   Aperture,
   Check,
+  ChevronDown,
   ClipboardList,
+  Clock3,
+  FileDown,
   FileText,
   ImagePlus,
   Layers,
@@ -19,11 +22,21 @@ import {
   Sun,
   UploadCloud,
   User,
+  Users,
   X,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import DermioLogo from "@/components/DermioLogo";
+import { DEMO_PATIENTS_BY_DATE, type DemoPatient } from "@/data/demoPatients";
 
 const AUTH_KEY = "doctor_auth_session";
 
@@ -131,6 +144,7 @@ type ChannelSlot = { file: File; preview: string } | null;
 /* ------------------------------------------------------------------ */
 
 interface Anamnesis {
+  name: string;
   patientId: string;
   age: string;
   sex: string;
@@ -142,6 +156,7 @@ interface Anamnesis {
 }
 
 const EMPTY_ANAMNESIS: Anamnesis = {
+  name: "",
   patientId: "",
   age: "",
   sex: "",
@@ -158,6 +173,7 @@ const RISK_OPTIONS = ["Personal skin cancer", "Family skin cancer", "Immunosuppr
 
 const anamnesisEntries = (a: Anamnesis): { label: string; value: string }[] =>
   [
+    { label: "Patient", value: a.name.trim() },
     { label: "Patient ID", value: a.patientId.trim() },
     { label: "Age", value: a.age.trim() },
     { label: "Sex", value: a.sex },
@@ -170,6 +186,21 @@ const anamnesisEntries = (a: Anamnesis): { label: string; value: string }[] =>
 
 const escapeHtml = (s: string) =>
   s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] as string);
+
+const initials = (name: string) =>
+  name
+    .trim()
+    .split(/\s+/)
+    .slice(0, 2)
+    .map((w) => w.charAt(0))
+    .join("")
+    .toUpperCase();
+
+const formatScanDate = (iso: string) => {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+};
 
 /* ------------------------------------------------------------------ */
 /* Image helpers                                                       */
@@ -479,13 +510,96 @@ const RISK_TONES: Record<RiskTone, { chip: string; bar: string; text: string; ic
 
 const SectionTitle = ({ icon: Icon, title, right }: { icon: LucideIcon; title: string; right?: ReactNode }) => (
   <div className="flex items-center justify-between gap-2">
-    <h2 className="text-[13px] font-semibold text-slate-900 flex items-center gap-1.5">
-      <Icon className="w-3.5 h-3.5 text-clinical-blue" />
+    <h2 className="text-[13px] font-semibold text-slate-900 flex items-center gap-1.5 whitespace-nowrap">
+      <Icon className="w-3.5 h-3.5 shrink-0 text-clinical-blue" />
       {title}
     </h2>
     {right}
   </div>
 );
+
+interface ReportData {
+  anamnesis: Anamnesis;
+  top: Prediction;
+  predictions: Prediction[];
+  riskScore: number | null;
+  channelResults: ChannelResult[];
+  fusion: { used: number; total: number } | null;
+  date: string | null;
+  doctorId: string;
+}
+
+/** Opens the printable report in a new tab (browser print → Save as PDF). */
+const openReport = (data: ReportData) => {
+  const { anamnesis, top, predictions, riskScore, channelResults, fusion, date, doctorId } = data;
+  const desc = DISEASE_REPORTS[top.label] || `Detected: ${top.label}`;
+  const band = riskScore !== null ? riskBand(riskScore) : null;
+  const rows = anamnesisEntries(anamnesis);
+  const win = window.open("", "_blank");
+  if (!win) return;
+
+  const anamnesisHtml = rows.length
+    ? `<table>${rows.map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`).join("")}</table>`
+    : `<p class="muted">No anamnesis recorded.</p>`;
+
+  const channelRows = CHANNELS.map((ch) => {
+    const result = channelResults.find((c) => c.id === ch.id);
+    const topC = result?.top_prediction;
+    return `<tr>
+      <th>${escapeHtml(`${ch.short} · ${ch.name}`)}</th>
+      <td>${escapeHtml(ch.detects)}</td>
+      <td>${topC ? escapeHtml(topC.label) : `<span class="muted">${escapeHtml(result?.error || "No result")}</span>`}</td>
+      <td>${topC ? `${(topC.score * 100).toFixed(2)}%` : "–"}</td>
+    </tr>`;
+  }).join("");
+
+  const rankingRows = predictions
+    .slice(0, 6)
+    .map((p, i) => `<tr><th>${i + 1}. ${escapeHtml(p.label)}</th><td>${(p.score * 100).toFixed(2)}%</td></tr>`)
+    .join("");
+
+  win.document.write(`
+    <html><head><title>Dermio Report${anamnesis.name ? ` – ${escapeHtml(anamnesis.name)}` : ""}</title>
+    <style>
+      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 40px; color: #0f172a; }
+      h1 { color: #2563EB; } .section { margin-top: 24px; }
+      .label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
+      .value { font-size: 1.5rem; font-weight: 600; margin-top: 4px; }
+      .muted { color: #94a3b8; }
+      .band { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 0.9rem; }
+      .band-red { background: #fff1f2; color: #be123c; } .band-amber { background: #fffbeb; color: #b45309; } .band-green { background: #ecfdf5; color: #047857; }
+      p { line-height: 1.6; color: #334155; }
+      table { border-collapse: collapse; margin-top: 8px; width: 100%; font-size: 0.9rem; }
+      th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
+      th { color: #475569; font-weight: 600; white-space: nowrap; }
+      .footer { margin-top: 40px; font-size: 0.75rem; color: #94a3b8; text-align: center; }
+    </style></head>
+    <body>
+      <h1>Dermio — Multispectral Skin Scan Report</h1>
+      <div class="section"><div class="label">Scan</div><div>${date ? escapeHtml(formatScanDate(date)) : new Date().toLocaleString()}${doctorId ? ` · Doctor ${escapeHtml(doctorId)}` : ""}</div></div>
+      <div class="section"><div class="label">Patient Anamnesis</div>${anamnesisHtml}</div>
+      <div class="section">
+        <div class="label">Combined Result</div>
+        <div class="value">${escapeHtml(top.label)}</div>
+        <div>Confidence: <strong>${(top.score * 100).toFixed(2)}%</strong></div>
+        ${band ? `<div style="margin-top:6px">Malignancy risk: <span class="band band-${band.tone}">${band.label}</span> &nbsp;${((riskScore ?? 0) * 100).toFixed(0)}% malignant-class probability. ${escapeHtml(band.advice)}</div>` : ""}
+        <div class="muted" style="margin-top:6px">Fused from ${fusion ? `${fusion.used}/${fusion.total}` : "3/3"} spectral channels (non-polarized, polarized, UV / blue light) into a unified digital map.</div>
+        <table>${rankingRows}</table>
+      </div>
+      <div class="section">
+        <div class="label">Per-channel Evaluation</div>
+        <table>
+          <tr><th>Channel</th><th>Detects</th><th>Top prediction</th><th>Confidence</th></tr>
+          ${channelRows}
+        </table>
+      </div>
+      <div class="section"><div class="label">Condition Information</div><p>${desc}</p></div>
+      <div class="footer">This report is generated by an AI model and is intended for informational purposes only. It is not a substitute for professional medical advice, diagnosis, or treatment.</div>
+    </body></html>
+  `);
+  win.document.close();
+  win.print();
+};
 
 /* ------------------------------------------------------------------ */
 /* Dashboard                                                           */
@@ -522,6 +636,8 @@ const Dashboard = () => {
   const [fusionInfo, setFusionInfo] = useState<{ used: number; total: number } | null>(null);
   const [view, setView] = useState<ViewKey>("ch1");
   const [doctorId, setDoctorId] = useState("");
+  const [scanDate, setScanDate] = useState<string | null>(null);
+  const pendingViewRef = useRef<ViewKey | null>(null);
   const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const anamnesisRef = useRef<HTMLElement | null>(null);
   const slotsRef = useRef<ChannelSlot[]>(slots);
@@ -617,6 +733,13 @@ const Dashboard = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [previewKey, fusedPreview, stage, analysisStarted]);
 
+  useEffect(() => {
+    if (fusedPreview && pendingViewRef.current) {
+      setView(pendingViewRef.current);
+      pendingViewRef.current = null;
+    }
+  }, [fusedPreview]);
+
   const clearStageTimers = () => {
     stageTimersRef.current.forEach((timerId) => window.clearTimeout(timerId));
     stageTimersRef.current = [];
@@ -633,6 +756,7 @@ const Dashboard = () => {
     setRiskScore(null);
     setChannelResults([]);
     setFusionInfo(null);
+    setScanDate(null);
   };
 
   /** Places dropped files into channel slots starting at `startIdx` (drop 3 files on Ch 1 to fill all). */
@@ -765,6 +889,7 @@ const Dashboard = () => {
       setRiskScore(topPred ? malignancyScore(preds) : null);
       setChannelResults(payload.channels ?? []);
       setFusionInfo({ used, total });
+      setScanDate(new Date().toISOString());
       setStatus(topPred ? `Combined evaluation complete (${used}/${total} channels).` : "Analysis complete. No predictions returned.");
     } catch (e: unknown) {
       if (analysisRunRef.current !== runId) return;
@@ -798,6 +923,48 @@ const Dashboard = () => {
     });
   };
 
+  /** Loads a stored demo scan: anamnesis, the three spectral photos and the saved result. */
+  const loadDemoPatient = async (demo: DemoPatient) => {
+    resetAnalysis();
+    setAnamnesis({ ...demo.anamnesis });
+    setStatus(`Loading scan for ${demo.anamnesis.name}.`);
+    try {
+      const files = await Promise.all(
+        demo.photos.map(async (url, i) => {
+          const blob = await (await fetch(url)).blob();
+          return new File([blob], `${demo.slug}-ch${i + 1}.jpg`, { type: blob.type || "image/jpeg" });
+        })
+      );
+      setSlots((prev) => {
+        prev.forEach((s) => {
+          if (s) URL.revokeObjectURL(s.preview);
+        });
+        return files.map((file) => ({ file, preview: URL.createObjectURL(file) }));
+      });
+      inputRefs.current.forEach((input) => {
+        if (input) input.value = "";
+      });
+      const preds = demo.predictions;
+      setAnalysisStarted(true);
+      setStage(4);
+      setPredictions(preds.slice(0, 6));
+      setTop(preds[0] ?? null);
+      setRiskScore(malignancyScore(preds));
+      setChannelResults(demo.channels);
+      setFusionInfo({ used: demo.channels.length, total: CHANNELS.length });
+      setScanDate(demo.scannedAt);
+      pendingViewRef.current = "segmentation";
+      setStatus(`Previous scan loaded (${formatScanDate(demo.scannedAt)}).`);
+    } catch {
+      setStatus("Could not load demo images.");
+    }
+  };
+
+  const handleNewPatient = () => {
+    handleClear();
+    setAnamnesis(EMPTY_ANAMNESIS);
+  };
+
   const handleLogout = () => {
     localStorage.removeItem(AUTH_KEY);
     navigate("/doctor-login");
@@ -810,67 +977,22 @@ const Dashboard = () => {
 
   const handleDownloadPDF = () => {
     if (!top) return;
-    const desc = DISEASE_REPORTS[top.label] || `Detected: ${top.label}`;
-    const date = new Date().toLocaleString();
-    const band = riskScore !== null ? riskBand(riskScore) : null;
-    const win = window.open("", "_blank");
-    if (!win) return;
+    openReport({ anamnesis, top, predictions, riskScore, channelResults, fusion: fusionInfo, date: scanDate, doctorId });
+  };
 
-    const anamnesisHtml = anamnesisRows.length
-      ? `<table>${anamnesisRows
-          .map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`)
-          .join("")}</table>`
-      : `<p class="muted">No anamnesis recorded.</p>`;
-
-    const channelRows = CHANNELS.map((ch) => {
-      const result = channelResults.find((c) => c.id === ch.id);
-      const topC = result?.top_prediction;
-      return `<tr>
-        <th>${escapeHtml(`${ch.short} · ${ch.name}`)}</th>
-        <td>${escapeHtml(ch.detects)}</td>
-        <td>${topC ? escapeHtml(topC.label) : `<span class="muted">${escapeHtml(result?.error || "No result")}</span>`}</td>
-        <td>${topC ? `${(topC.score * 100).toFixed(2)}%` : "–"}</td>
-      </tr>`;
-    }).join("");
-
-    win.document.write(`
-      <html><head><title>Dermio Report</title>
-      <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 40px; color: #0f172a; }
-        h1 { color: #2563EB; } .section { margin-top: 24px; }
-        .label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-        .value { font-size: 1.5rem; font-weight: 600; margin-top: 4px; }
-        .muted { color: #94a3b8; }
-        p { line-height: 1.6; color: #334155; }
-        table { border-collapse: collapse; margin-top: 8px; width: 100%; font-size: 0.9rem; }
-        th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
-        th { color: #475569; font-weight: 600; white-space: nowrap; }
-        .footer { margin-top: 40px; font-size: 0.75rem; color: #94a3b8; text-align: center; }
-      </style></head>
-      <body>
-        <h1>Dermio — Multispectral Skin Scan Report</h1>
-        <div class="section"><div class="label">Report Generated</div><div>${date}${doctorId ? ` · Doctor ${escapeHtml(doctorId)}` : ""}</div></div>
-        <div class="section"><div class="label">Patient Anamnesis</div>${anamnesisHtml}</div>
-        <div class="section">
-          <div class="label">Combined Result</div>
-          <div class="value">${escapeHtml(top.label)}</div>
-          <div>Confidence: <strong>${(top.score * 100).toFixed(2)}%</strong></div>
-          ${band ? `<div>Malignancy risk: <strong>${band.label}</strong> (${(riskScore! * 100).toFixed(0)}% malignant-class probability). ${escapeHtml(band.advice)}</div>` : ""}
-          <div class="muted">Fused from ${fusionInfo ? `${fusionInfo.used}/${fusionInfo.total}` : "3/3"} spectral channels (non-polarized, polarized, UV / blue light) into a unified digital map.</div>
-        </div>
-        <div class="section">
-          <div class="label">Per-channel Evaluation</div>
-          <table>
-            <tr><th>Channel</th><th>Detects</th><th>Top prediction</th><th>Confidence</th></tr>
-            ${channelRows}
-          </table>
-        </div>
-        <div class="section"><div class="label">Condition Information</div><p>${desc}</p></div>
-        <div class="footer">This report is generated by an AI model and is intended for informational purposes only. It is not a substitute for professional medical advice, diagnosis, or treatment.</div>
-      </body></html>
-    `);
-    win.document.close();
-    win.print();
+  const downloadDemoReport = (demo: DemoPatient) => {
+    const preds = demo.predictions;
+    if (!preds[0]) return;
+    openReport({
+      anamnesis: { ...demo.anamnesis },
+      top: preds[0],
+      predictions: preds,
+      riskScore: malignancyScore(preds),
+      channelResults: demo.channels,
+      fusion: { used: demo.channels.length, total: CHANNELS.length },
+      date: demo.scannedAt,
+      doctorId: demo.doctorId,
+    });
   };
 
   const report = top ? DISEASE_REPORTS[top.label] || `Detected condition: ${top.label}. Please consult a dermatologist.` : null;
@@ -896,18 +1018,58 @@ const Dashboard = () => {
           </div>
         </div>
         <div className="h-6 w-px bg-slate-200 shrink-0" />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" className="h-8 px-2.5 rounded-md border-slate-200 bg-white text-slate-700 text-xs font-medium gap-1.5 shrink-0">
+              <Users className="w-3.5 h-3.5 text-clinical-blue" />
+              <span className="hidden sm:inline">Patients</span>
+              <ChevronDown className="w-3.5 h-3.5 text-slate-400" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-[22rem] p-1">
+            <DropdownMenuLabel className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Recent patients</DropdownMenuLabel>
+            {DEMO_PATIENTS_BY_DATE.map((demo) => {
+              const b = riskBand(malignancyScore(demo.predictions));
+              const t = RISK_TONES[b.tone];
+              return (
+                <DropdownMenuItem key={demo.slug} onSelect={() => void loadDemoPatient(demo)} className="flex items-center gap-2.5 py-2 cursor-pointer">
+                  <span className="w-7 h-7 rounded-full bg-sky-50 text-clinical-blue text-[11px] font-bold flex items-center justify-center shrink-0">{initials(demo.anamnesis.name)}</span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-xs font-semibold text-slate-900 truncate">{demo.anamnesis.name}</span>
+                    <span className="block text-[10px] text-slate-500 truncate">{demo.anamnesis.patientId} · {demo.anamnesis.age} y · {demo.anamnesis.sex} · {formatScanDate(demo.scannedAt)}</span>
+                  </span>
+                  <span className="text-right shrink-0">
+                    <span className="block text-[10px] text-slate-700 truncate max-w-[104px]">{demo.predictions[0]?.label}</span>
+                    <span className={`inline-block text-[9px] font-semibold px-1.5 py-px rounded border ${t.chip}`}>{b.label} risk</span>
+                  </span>
+                </DropdownMenuItem>
+              );
+            })}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem onSelect={handleNewPatient} className="text-xs text-slate-600 cursor-pointer gap-2">
+              <ImagePlus className="w-3.5 h-3.5" />
+              New patient (blank)
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button type="button" onClick={focusAnamnesis} className="flex items-center gap-2 min-w-0 flex-1 text-left rounded-md px-1.5 py-1 hover:bg-slate-50 transition-colors" title="Edit patient anamnesis">
           <User className="w-4 h-4 text-slate-400 shrink-0" />
-          {anamnesis.patientId.trim() ? (
-            <span className="font-semibold text-slate-900 truncate">{anamnesis.patientId.trim()}</span>
+          {anamnesis.name.trim() || anamnesis.patientId.trim() ? (
+            <span className="font-semibold text-slate-900 truncate">{anamnesis.name.trim() || anamnesis.patientId.trim()}</span>
           ) : (
-            <span className="text-slate-400 truncate">No patient · add anamnesis</span>
+            <span className="text-slate-400 truncate">No patient · pick one or add anamnesis</span>
           )}
-          <div className="hidden md:flex items-center gap-1 min-w-0">
-            {[anamnesis.age.trim() && `${anamnesis.age.trim()} y`, anamnesis.sex, anamnesis.site.trim(), anamnesis.duration.trim()]
-              .filter(Boolean)
-              .map((chip) => (
-                <span key={chip as string} className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 truncate max-w-[160px]">{chip}</span>
+          <div className="hidden md:flex items-center gap-1 min-w-0 overflow-hidden">
+            {[
+              { text: anamnesis.name.trim() && anamnesis.patientId.trim(), cls: "" },
+              { text: anamnesis.age.trim() && `${anamnesis.age.trim()} y`, cls: "hidden xl:inline" },
+              { text: anamnesis.sex, cls: "hidden xl:inline" },
+              { text: anamnesis.site.trim(), cls: "hidden xl:inline" },
+              { text: anamnesis.duration.trim(), cls: "hidden 2xl:inline" },
+            ]
+              .filter((c) => c.text)
+              .map((c) => (
+                <span key={c.text as string} className={`text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-600 whitespace-nowrap shrink-0 ${c.cls}`}>{c.text}</span>
               ))}
           </div>
         </button>
@@ -1015,10 +1177,15 @@ const Dashboard = () => {
               title="Patient & anamnesis"
               right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${anamnesisRows.length ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{anamnesisRows.length ? "Recorded" : "Optional"}</span>}
             />
-            <div className="grid grid-cols-[1.4fr_0.8fr_1fr] gap-2 mt-2">
-              <Field label="Patient ID">
-                <input className={inputClass} value={anamnesis.patientId} onChange={(e) => setAnamnesis((p) => ({ ...p, patientId: e.target.value }))} placeholder="P-0412" />
+            <div className="grid grid-cols-[1.5fr_1fr] gap-2 mt-2">
+              <Field label="Patient name">
+                <input className={inputClass} value={anamnesis.name} onChange={(e) => setAnamnesis((p) => ({ ...p, name: e.target.value }))} placeholder="სახელი გვარი" />
               </Field>
+              <Field label="Patient ID">
+                <input className={inputClass} value={anamnesis.patientId} onChange={(e) => setAnamnesis((p) => ({ ...p, patientId: e.target.value }))} placeholder="P-2026-0412" />
+              </Field>
+            </div>
+            <div className="grid grid-cols-2 gap-2 mt-2">
               <Field label="Age">
                 <input className={inputClass} type="number" min={0} max={120} value={anamnesis.age} onChange={(e) => setAnamnesis((p) => ({ ...p, age: e.target.value }))} placeholder="yrs" />
               </Field>
@@ -1206,7 +1373,24 @@ const Dashboard = () => {
 
         {/* Right: assessment */}
         <aside className={`${panel} md:col-start-2 lg:col-start-3 lg:min-h-0 lg:overflow-y-auto dash-scroll p-3 flex flex-col gap-3`}>
-          <SectionTitle icon={ScanSearch} title="AI assessment" right={fusionInfo && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-50 text-clinical-blue">{fusionInfo.used}/{fusionInfo.total} channels fused</span>} />
+          <SectionTitle
+            icon={ScanSearch}
+            title="AI assessment"
+            right={
+              top ? (
+                fusionInfo && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-sky-50 text-clinical-blue shrink-0 whitespace-nowrap">{fusionInfo.used}/{fusionInfo.total} channels fused</span>
+              ) : (
+                <span className="text-[10px] text-slate-400">{DEMO_PATIENTS_BY_DATE.length} stored scans</span>
+              )
+            }
+          />
+          {top && scanDate && (
+            <p className="-mt-2 text-[10px] text-slate-500 flex items-center gap-1">
+              <Clock3 className="w-3 h-3 shrink-0" />
+              Scanned {formatScanDate(scanDate)}
+              {doctorId ? ` · Dr. ${doctorId}` : ""}
+            </p>
+          )}
 
           {!top && (
             <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-3 space-y-2.5">
@@ -1237,6 +1421,46 @@ const Dashboard = () => {
                   {status.startsWith("Error") || status.startsWith("Backend") ? <p className="text-[11px] text-rose-600 leading-snug">{status}</p> : null}
                 </>
               )}
+            </div>
+          )}
+
+          {!top && !loading && (
+            <div className="rounded-lg border border-slate-200 overflow-hidden">
+              <div className="flex items-center justify-between px-3 py-2 border-b border-slate-100 bg-slate-50/70">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 flex items-center gap-1.5">
+                  <Clock3 className="w-3 h-3" />
+                  Recent scans
+                </p>
+                <span className="text-[10px] text-slate-400">Tap to open · PDF to export</span>
+              </div>
+              <ul className="divide-y divide-slate-100">
+                {DEMO_PATIENTS_BY_DATE.map((demo) => {
+                  const b = riskBand(malignancyScore(demo.predictions));
+                  const t = RISK_TONES[b.tone];
+                  const topP = demo.predictions[0];
+                  return (
+                    <li key={demo.slug} className="flex items-center gap-2 px-2.5 py-2 hover:bg-slate-50 transition-colors">
+                      <button type="button" onClick={() => void loadDemoPatient(demo)} className="flex items-center gap-2 min-w-0 flex-1 text-left">
+                        <span className="w-7 h-7 rounded-full bg-sky-50 text-clinical-blue text-[11px] font-bold flex items-center justify-center shrink-0">{initials(demo.anamnesis.name)}</span>
+                        <span className="min-w-0 flex-1">
+                          <span className="block text-xs font-semibold text-slate-900 truncate">{demo.anamnesis.name}</span>
+                          <span className="block text-[10px] text-slate-500 truncate">{formatScanDate(demo.scannedAt)} · {demo.anamnesis.site}</span>
+                          <span className="flex items-center gap-1.5 mt-0.5 min-w-0">
+                            <span className="text-[10px] text-slate-700 truncate">{topP ? `${topP.label} ${(topP.score * 100).toFixed(0)}%` : "–"}</span>
+                            <span className={`inline-flex items-center gap-0.5 text-[9px] font-semibold px-1 py-px rounded border shrink-0 ${t.chip}`}>
+                              <t.icon className="w-2.5 h-2.5" />
+                              {b.label}
+                            </span>
+                          </span>
+                        </span>
+                      </button>
+                      <button type="button" onClick={() => downloadDemoReport(demo)} title="Download PDF report" className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-clinical-blue hover:bg-sky-50 transition-colors">
+                        <FileDown className="w-4 h-4" />
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
             </div>
           )}
 
