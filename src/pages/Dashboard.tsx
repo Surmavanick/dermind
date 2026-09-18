@@ -895,7 +895,7 @@ const Dashboard = () => {
       if (analysisRunRef.current !== runId) return;
       const message = e instanceof Error ? e.message : "Error";
       if (message === "LOCAL_API_NOT_AVAILABLE") {
-        setStatus("Backend route /api/hf/analyze is not available in this environment. Deploy on Vercel or run `vercel dev`.");
+        setStatus("Analysis service is not reachable at this address. Open the app from its current URL, sign in again and retry.");
       } else {
         setStatus(`Error: ${message}`);
       }
