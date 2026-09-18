@@ -518,6 +518,13 @@ const SectionTitle = ({ icon: Icon, title, right }: { icon: LucideIcon; title: s
   </div>
 );
 
+interface ReportImages {
+  channels: (string | null)[];
+  fused: string | null;
+  heatmap: string | null;
+  segmentation: string | null;
+}
+
 interface ReportData {
   anamnesis: Anamnesis;
   top: Prediction;
@@ -527,77 +534,284 @@ interface ReportData {
   fusion: { used: number; total: number } | null;
   date: string | null;
   doctorId: string;
+  images: ReportImages;
 }
 
-/** Opens the printable report in a new tab (browser print → Save as PDF). */
-const openReport = (data: ReportData) => {
-  const { anamnesis, top, predictions, riskScore, channelResults, fusion, date, doctorId } = data;
-  const desc = DISEASE_REPORTS[top.label] || `Detected: ${top.label}`;
-  const band = riskScore !== null ? riskBand(riskScore) : null;
-  const rows = anamnesisEntries(anamnesis);
-  const win = window.open("", "_blank");
-  if (!win) return;
+const REPORT_IMAGE_WIDTH = 640;
 
-  const anamnesisHtml = rows.length
-    ? `<table>${rows.map((row) => `<tr><th>${escapeHtml(row.label)}</th><td>${escapeHtml(row.value)}</td></tr>`).join("")}</table>`
-    : `<p class="muted">No anamnesis recorded.</p>`;
+/** Re-encodes any image source (blob:, data:, or same-origin URL) as a downscaled JPEG data URL. */
+const imageToJpeg = async (src: string, maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
+  const img = await loadImage(src);
+  if (!img) return null;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, w, h);
+  return canvas.toDataURL("image/jpeg", 0.85);
+};
+
+/** Draws the segmentation layers over the fused map, matching the viewer's opacities. */
+const compositeSegmentation = async (base: string, layers: SegmentationLayers, maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
+  const img = await loadImage(base);
+  if (!img) return null;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, w, h);
+  const overlays: [string, number][] = [
+    [layers.normalSkin, 0.5],
+    [layers.comedones, 0.65],
+    [layers.hyperPigmentation, 0.65],
+    [layers.activeAcne, 0.7],
+  ];
+  for (const [src, alpha] of overlays) {
+    const layer = await loadImage(src);
+    if (!layer) continue;
+    ctx.globalAlpha = alpha;
+    ctx.drawImage(layer, 0, 0, w, h);
+  }
+  ctx.globalAlpha = 1;
+  return canvas.toDataURL("image/jpeg", 0.85);
+};
+
+/** Paints the same inflammation hotspots the viewer shows, multiplied onto the fused map. */
+const compositeHeatmap = async (base: string, maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
+  const img = await loadImage(base);
+  if (!img) return null;
+  const scale = Math.min(1, maxW / img.width);
+  const w = Math.max(1, Math.round(img.width * scale));
+  const h = Math.max(1, Math.round(img.height * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = w;
+  canvas.height = h;
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return null;
+  ctx.drawImage(img, 0, 0, w, h);
+  ctx.globalCompositeOperation = "multiply";
+  const blobs = [
+    { top: 0.22, left: 0.34, bw: 0.22, bh: 0.28, a: 0.6 },
+    { top: 0.52, left: 0.22, bw: 0.26, bh: 0.22, a: 0.45 },
+    { top: 0.62, left: 0.45, bw: 0.16, bh: 0.2, a: 0.45 },
+  ];
+  blobs.forEach((b) => {
+    const cx = (b.left + b.bw / 2) * w;
+    const cy = (b.top + b.bh / 2) * h;
+    const r = (Math.max(b.bw * w, b.bh * h) / 2) * 1.5;
+    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+    g.addColorStop(0, `rgba(239,68,68,${b.a})`);
+    g.addColorStop(0.55, `rgba(239,68,68,${b.a * 0.55})`);
+    g.addColorStop(1, "rgba(239,68,68,0)");
+    ctx.fillStyle = g;
+    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
+  });
+  ctx.globalCompositeOperation = "source-over";
+  return canvas.toDataURL("image/jpeg", 0.85);
+};
+
+const buildReportImages = async (
+  channelSources: (string | null)[],
+  fused: string | null,
+  layers: SegmentationLayers | null
+): Promise<ReportImages> => {
+  const [channels, fusedJpeg, heatmap, segmentation] = await Promise.all([
+    Promise.all(channelSources.map((src) => (src ? imageToJpeg(src) : Promise.resolve(null)))),
+    fused ? imageToJpeg(fused) : Promise.resolve(null),
+    fused ? compositeHeatmap(fused) : Promise.resolve(null),
+    fused && layers ? compositeSegmentation(fused, layers) : Promise.resolve(null),
+  ]);
+  return { channels, fused: fusedJpeg, heatmap, segmentation };
+};
+
+const truncateText = (text: string, max: number) => {
+  if (text.length <= max) return text;
+  const cut = text.slice(0, max);
+  const stop = Math.max(cut.lastIndexOf(". "), cut.lastIndexOf("; "));
+  return (stop > max * 0.55 ? cut.slice(0, stop + 1) : cut).trim() + " …";
+};
+
+const REPORT_LOGO_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="15" height="15" fill="none" stroke="#fff" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6v20"/><path d="M8 6h5a10 10 0 0 1 0 20H8"/><path d="M20.6 23.4 26.5 29.3"/><circle cx="14.2" cy="16" r="2.1" fill="#fff" stroke="none"/></svg>';
+
+/** Opens a blank tab immediately (keeps popup blockers happy) with a placeholder while images are prepared. */
+const openReportWindow = (): Window | null => {
+  const win = window.open("", "_blank");
+  if (!win) return null;
+  win.document.write(
+    '<html><head><title>Dermio Report</title></head><body style="font-family:system-ui,sans-serif;color:#475569;display:flex;align-items:center;justify-content:center;height:100vh;margin:0">Preparing report…</body></html>'
+  );
+  win.document.close();
+  return win;
+};
+
+/** Renders the single-page A4 report into `win` and opens the print dialog once every image has loaded. */
+const renderReport = async (win: Window, data: ReportData) => {
+  const { anamnesis, top, predictions, riskScore, channelResults, fusion, date, doctorId, images } = data;
+  const desc = truncateText(DISEASE_REPORTS[top.label] || `Detected: ${top.label}`, 520);
+  const band = riskScore !== null ? riskBand(riskScore) : null;
+  const risk = riskScore ?? 0;
+  const dash = '<span class="muted">–</span>';
+  const v = (str: string) => (str.trim() ? escapeHtml(str.trim()) : dash);
+  const list = (arr: string[]) => (arr.length ? escapeHtml(arr.join(", ")) : dash);
+
+  const anamnesisHtml = `<table class="kv">
+    <tr><th>Patient</th><td>${v(anamnesis.name)}</td><th>Patient ID</th><td>${v(anamnesis.patientId)}</td></tr>
+    <tr><th>Age</th><td>${v(anamnesis.age)}</td><th>Sex</th><td>${v(anamnesis.sex)}</td></tr>
+    <tr><th>Lesion site</th><td>${v(anamnesis.site)}</td><th>Duration</th><td>${v(anamnesis.duration)}</td></tr>
+    <tr><th>Symptoms</th><td colspan="3">${list(anamnesis.symptoms)}</td></tr>
+    <tr><th>Risk factors</th><td colspan="3">${list(anamnesis.riskFactors)}</td></tr>
+    <tr><th>Notes</th><td colspan="3">${anamnesis.notes.trim() ? escapeHtml(truncateText(anamnesis.notes.trim(), 220)) : dash}</td></tr>
+  </table>`;
+
+  const figure = (src: string | null, title: string, caption: string) =>
+    `<figure class="fig"><div class="img">${src ? `<img src="${src}" alt="${escapeHtml(title)}" />` : '<span class="noimg">Not available</span>'}</div><figcaption><b>${escapeHtml(title)}</b><span>${escapeHtml(caption)}</span></figcaption></figure>`;
+
+  const imagesHtml = [
+    ...CHANNELS.map((ch, i) => figure(images.channels[i] ?? null, `${ch.short} · ${ch.name}`, ch.detects)),
+    figure(images.fused, "Unified digital map", "Three spectral layers fused"),
+    figure(images.heatmap, "Inflammation heatmap", "Inflammation and vascular signal"),
+    figure(images.segmentation, "Segmentation", "Red damaged · yellow comedones · purple pigmentation · blue normal"),
+  ].join("");
+
+  const rankingRows = predictions
+    .slice(0, 5)
+    .map(
+      (p, i) =>
+        `<tr><td class="name">${i + 1}. ${escapeHtml(p.label)}</td><td class="barcell"><div class="bar"><i style="width:${clamp(p.score * 100, 1, 100).toFixed(1)}%"></i></div></td><td class="pct">${(p.score * 100).toFixed(1)}%</td></tr>`
+    )
+    .join("");
 
   const channelRows = CHANNELS.map((ch) => {
     const result = channelResults.find((c) => c.id === ch.id);
     const topC = result?.top_prediction;
     return `<tr>
-      <th>${escapeHtml(`${ch.short} · ${ch.name}`)}</th>
-      <td>${escapeHtml(ch.detects)}</td>
-      <td>${topC ? escapeHtml(topC.label) : `<span class="muted">${escapeHtml(result?.error || "No result")}</span>`}</td>
-      <td>${topC ? `${(topC.score * 100).toFixed(2)}%` : "–"}</td>
+      <td class="chan"><b>${escapeHtml(ch.short)}</b> ${escapeHtml(ch.name)}<br><span class="muted">${escapeHtml(ch.detects)}</span></td>
+      <td>${topC ? escapeHtml(topC.label) : `<span class="muted">${escapeHtml(result?.error ? "No result" : "Not evaluated")}</span>`}</td>
+      <td class="pct">${topC ? `${(topC.score * 100).toFixed(1)}%` : "–"}</td>
     </tr>`;
   }).join("");
 
-  const rankingRows = predictions
-    .slice(0, 6)
-    .map((p, i) => `<tr><th>${i + 1}. ${escapeHtml(p.label)}</th><td>${(p.score * 100).toFixed(2)}%</td></tr>`)
-    .join("");
+  const scanLine = date ? formatScanDate(date) : new Date().toLocaleString("en-GB");
+  const generated = new Date().toLocaleString("en-GB", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
 
-  win.document.write(`
-    <html><head><title>Dermio Report${anamnesis.name ? ` – ${escapeHtml(anamnesis.name)}` : ""}</title>
-    <style>
-      body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; padding: 40px; color: #0f172a; }
-      h1 { color: #2563EB; } .section { margin-top: 24px; }
-      .label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.5px; }
-      .value { font-size: 1.5rem; font-weight: 600; margin-top: 4px; }
-      .muted { color: #94a3b8; }
-      .band { display: inline-block; padding: 2px 10px; border-radius: 999px; font-weight: 600; font-size: 0.9rem; }
-      .band-red { background: #fff1f2; color: #be123c; } .band-amber { background: #fffbeb; color: #b45309; } .band-green { background: #ecfdf5; color: #047857; }
-      p { line-height: 1.6; color: #334155; }
-      table { border-collapse: collapse; margin-top: 8px; width: 100%; font-size: 0.9rem; }
-      th, td { text-align: left; padding: 6px 10px; border-bottom: 1px solid #e2e8f0; vertical-align: top; }
-      th { color: #475569; font-weight: 600; white-space: nowrap; }
-      .footer { margin-top: 40px; font-size: 0.75rem; color: #94a3b8; text-align: center; }
-    </style></head>
-    <body>
-      <h1>Dermio — Multispectral Skin Scan Report</h1>
-      <div class="section"><div class="label">Scan</div><div>${date ? escapeHtml(formatScanDate(date)) : new Date().toLocaleString()}${doctorId ? ` · Doctor ${escapeHtml(doctorId)}` : ""}</div></div>
-      <div class="section"><div class="label">Patient Anamnesis</div>${anamnesisHtml}</div>
-      <div class="section">
-        <div class="label">Combined Result</div>
-        <div class="value">${escapeHtml(top.label)}</div>
-        <div>Confidence: <strong>${(top.score * 100).toFixed(2)}%</strong></div>
-        ${band ? `<div style="margin-top:6px">Malignancy risk: <span class="band band-${band.tone}">${band.label}</span> &nbsp;${((riskScore ?? 0) * 100).toFixed(0)}% malignant-class probability. ${escapeHtml(band.advice)}</div>` : ""}
-        <div class="muted" style="margin-top:6px">Fused from ${fusion ? `${fusion.used}/${fusion.total}` : "3/3"} spectral channels (non-polarized, polarized, UV / blue light) into a unified digital map.</div>
-        <table>${rankingRows}</table>
-      </div>
-      <div class="section">
-        <div class="label">Per-channel Evaluation</div>
-        <table>
-          <tr><th>Channel</th><th>Detects</th><th>Top prediction</th><th>Confidence</th></tr>
-          ${channelRows}
-        </table>
-      </div>
-      <div class="section"><div class="label">Condition Information</div><p>${desc}</p></div>
-      <div class="footer">This report is generated by an AI model and is intended for informational purposes only. It is not a substitute for professional medical advice, diagnosis, or treatment.</div>
-    </body></html>
-  `);
+  const html = `<!doctype html>
+<html><head><meta charset="utf-8" />
+<title>Dermio Report${anamnesis.name.trim() ? ` – ${escapeHtml(anamnesis.name.trim())}` : ""}</title>
+<style>
+  @page { size: A4 portrait; margin: 9mm 10mm; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; background: #fff; }
+  body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif; color: #0f172a; font-size: 10px; line-height: 1.35; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .page { width: 190mm; margin: 0 auto; padding: 6mm 0; }
+  @media print { .page { padding: 0; } }
+  .muted { color: #64748b; }
+  header { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #2563eb; padding-bottom: 6px; margin-bottom: 8px; }
+  .brand { display: flex; align-items: center; gap: 8px; }
+  .mark { width: 24px; height: 24px; border-radius: 6px; background: linear-gradient(135deg, #2873bd, #18a1d4); display: flex; align-items: center; justify-content: center; }
+  h1 { font-size: 15px; margin: 0; line-height: 1.15; }
+  .sub { font-size: 9px; color: #64748b; margin-top: 1px; }
+  .meta { text-align: right; font-size: 9px; color: #475569; line-height: 1.4; }
+  .meta b { color: #0f172a; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-bottom: 8px; }
+  .card { border: 1px solid #e2e8f0; border-radius: 6px; padding: 7px 9px; break-inside: avoid; }
+  .label { font-size: 8px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: #64748b; margin-bottom: 4px; }
+  table { border-collapse: collapse; width: 100%; }
+  th, td { text-align: left; padding: 2px 4px; vertical-align: top; border-bottom: 1px solid #f1f5f9; font-size: 9.5px; }
+  tr:last-child th, tr:last-child td { border-bottom: 0; }
+  th { color: #64748b; font-weight: 600; white-space: nowrap; width: 1%; padding-right: 8px; }
+  .kv td { color: #0f172a; }
+  .result .dxrow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 1px 0 3px; }
+  .result .dx { font-size: 17px; font-weight: 700; line-height: 1.1; }
+  .result .conf { font-size: 13px; font-weight: 700; color: #2563eb; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .band { display: inline-block; padding: 1px 7px; border-radius: 999px; font-weight: 700; font-size: 9px; border: 1px solid; vertical-align: middle; }
+  .band-red { background: #fff1f2; color: #be123c; border-color: #fecdd3; }
+  .band-amber { background: #fffbeb; color: #b45309; border-color: #fde68a; }
+  .band-green { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+  .riskbar { position: relative; height: 5px; border-radius: 3px; margin: 6px 5px 4px; background: linear-gradient(to right, #6ee7b7 0 20%, #fcd34d 20% 50%, #fda4af 50% 100%); }
+  .riskbar i { position: absolute; top: -3.5px; width: 11px; height: 11px; border-radius: 50%; background: #0f172a; border: 2px solid #fff; transform: translateX(-50%); box-shadow: 0 0 0 1px #0f172a; }
+  .advice { font-size: 9.5px; color: #334155; margin-top: 2px; }
+  .images { display: grid; grid-template-columns: repeat(3, 1fr); gap: 7px; margin-bottom: 8px; }
+  .fig { margin: 0; border: 1px solid #e2e8f0; border-radius: 6px; overflow: hidden; break-inside: avoid; }
+  .fig .img { aspect-ratio: 4 / 3; background: #0f172a; display: flex; align-items: center; justify-content: center; }
+  .fig img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .fig .noimg { color: #94a3b8; font-size: 9px; }
+  .fig figcaption { padding: 3px 6px 4px; font-size: 8.5px; line-height: 1.25; color: #64748b; }
+  .fig figcaption b { display: block; font-size: 9px; color: #0f172a; }
+  .rank td.name { white-space: nowrap; }
+  .rank td.barcell { width: 42%; padding-top: 6px; }
+  .bar { height: 4px; background: #e2e8f0; border-radius: 2px; overflow: hidden; }
+  .bar i { display: block; height: 100%; background: #2563eb; }
+  td.pct { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; width: 1%; }
+  td.chan { white-space: nowrap; }
+  td.chan .muted { font-size: 8.5px; white-space: normal; }
+  .info p { margin: 0; color: #334155; font-size: 9.5px; }
+  footer { margin-top: 8px; padding-top: 5px; border-top: 1px solid #e2e8f0; font-size: 8px; color: #94a3b8; display: flex; justify-content: space-between; gap: 12px; }
+</style></head>
+<body><div class="page">
+  <header>
+    <div class="brand">
+      <div class="mark">${REPORT_LOGO_SVG}</div>
+      <div><h1>Dermio · Multispectral Skin Scan Report</h1><div class="sub">Non-polarized · Polarized · UV / Blue Light — fused into one digital map and evaluated together</div></div>
+    </div>
+    <div class="meta"><div><b>Scan</b> ${escapeHtml(scanLine)}</div>${doctorId ? `<div>Doctor ${escapeHtml(doctorId)}</div>` : ""}<div>Fused from ${fusion ? `${fusion.used}/${fusion.total}` : "3/3"} spectral channels</div></div>
+  </header>
+
+  <div class="grid2">
+    <div class="card"><div class="label">Patient &amp; anamnesis</div>${anamnesisHtml}</div>
+    <div class="card result">
+      <div class="label">Combined result</div>
+      <div class="dxrow"><span class="dx">${escapeHtml(top.label)}</span><span class="conf">${(top.score * 100).toFixed(1)}% confidence</span></div>
+      ${
+        band
+          ? `<div>Malignancy risk <span class="band band-${band.tone}">${band.label}</span> <span class="muted">${(risk * 100).toFixed(0)}% malignant-class probability</span></div>
+      <div class="riskbar"><i style="left:${(risk * 100).toFixed(1)}%"></i></div>
+      <div class="advice">${escapeHtml(band.advice)}</div>`
+          : ""
+      }
+      <div class="label" style="margin-top:6px">Fused ranking</div>
+      <table class="rank">${rankingRows}</table>
+    </div>
+  </div>
+
+  <div class="images">${imagesHtml}</div>
+
+  <div class="grid2">
+    <div class="card"><div class="label">Per-channel evaluation</div><table class="chanTable">${channelRows}</table></div>
+    <div class="card info"><div class="label">Condition information</div><p>${escapeHtml(desc)}</p></div>
+  </div>
+
+  <footer>
+    <span>Generated by the Dermio AI model on ${escapeHtml(generated)}. For informational purposes only; not a substitute for professional medical advice, diagnosis, or treatment.</span>
+    <span>dermio.vercel.app</span>
+  </footer>
+</div></body></html>`;
+
+  win.document.open();
+  win.document.write(html);
   win.document.close();
+
+  const imgs = Array.from(win.document.images);
+  await Promise.all(
+    imgs.map(
+      (img) =>
+        new Promise<void>((resolve) => {
+          if (img.complete) return resolve();
+          img.addEventListener("load", () => resolve(), { once: true });
+          img.addEventListener("error", () => resolve(), { once: true });
+        })
+    )
+  );
+  await new Promise((resolve) => window.setTimeout(resolve, 200));
+  win.focus();
   win.print();
 };
 
@@ -975,15 +1189,27 @@ const Dashboard = () => {
     anamnesisRef.current?.querySelector("input")?.focus();
   };
 
-  const handleDownloadPDF = () => {
+  const handleDownloadPDF = async () => {
     if (!top) return;
-    openReport({ anamnesis, top, predictions, riskScore, channelResults, fusion: fusionInfo, date: scanDate, doctorId });
+    const win = openReportWindow();
+    if (!win) return;
+    const images = await buildReportImages(
+      slots.map((s) => s?.preview ?? null),
+      fusedPreview,
+      segmentationLayers
+    );
+    await renderReport(win, { anamnesis, top, predictions, riskScore, channelResults, fusion: fusionInfo, date: scanDate, doctorId, images });
   };
 
-  const downloadDemoReport = (demo: DemoPatient) => {
+  const downloadDemoReport = async (demo: DemoPatient) => {
     const preds = demo.predictions;
     if (!preds[0]) return;
-    openReport({
+    const win = openReportWindow();
+    if (!win) return;
+    const fused = await buildFusedMap([...demo.photos]);
+    const layers = fused ? await buildSegmentationLayers(fused) : null;
+    const images = await buildReportImages([...demo.photos], fused, layers);
+    await renderReport(win, {
       anamnesis: { ...demo.anamnesis },
       top: preds[0],
       predictions: preds,
@@ -992,6 +1218,7 @@ const Dashboard = () => {
       fusion: { used: demo.channels.length, total: CHANNELS.length },
       date: demo.scannedAt,
       doctorId: demo.doctorId,
+      images,
     });
   };
 
@@ -1454,7 +1681,7 @@ const Dashboard = () => {
                           </span>
                         </span>
                       </button>
-                      <button type="button" onClick={() => downloadDemoReport(demo)} title="Download PDF report" className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-clinical-blue hover:bg-sky-50 transition-colors">
+                      <button type="button" onClick={() => void downloadDemoReport(demo)} title="Download PDF report" className="shrink-0 p-1.5 rounded-md text-slate-400 hover:text-clinical-blue hover:bg-sky-50 transition-colors">
                         <FileDown className="w-4 h-4" />
                       </button>
                     </li>
@@ -1545,7 +1772,7 @@ const Dashboard = () => {
               {report && <p className="text-[11px] text-slate-500 leading-snug">{report}</p>}
 
               <div className="sticky bottom-0 mt-auto -mx-3 -mb-3 px-3 py-3 bg-white border-t border-slate-100 flex gap-2">
-                <Button onClick={handleDownloadPDF} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold">
+                <Button onClick={() => void handleDownloadPDF()} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold">
                   <FileText className="w-4 h-4" />
                   Report PDF
                 </Button>
