@@ -10,9 +10,13 @@ import {
   ChevronDown,
   ClipboardList,
   Clock3,
+  Eye,
   FileDown,
   FileText,
+  FileUp,
   ImagePlus,
+  Images,
+  Pencil,
   Layers,
   Loader2,
   LogOut,
@@ -138,6 +142,84 @@ const CHANNELS: ChannelDef[] = [
 ];
 
 type ChannelSlot = { file: File; preview: string } | null;
+
+/* ------------------------------------------------------------------ */
+/* .spectrum capture file                                              */
+/* ------------------------------------------------------------------ */
+
+/**
+ * A `.spectrum` file is one JSON document exported by the capture device that
+ * bundles all three spectral channels (and optionally patient data):
+ * { format: "dermio.spectrum", version: 1, capturedAt, device,
+ *   channels: [{ id: 1|2|3, name, mime, data: <base64> }], patient?: {...} }
+ */
+const SPECTRUM_FORMAT = "dermio.spectrum";
+
+interface SpectrumChannel {
+  id?: number;
+  name?: string;
+  mime?: string;
+  data?: string;
+}
+
+interface SpectrumPatient {
+  name?: string;
+  patientId?: string;
+  age?: string | number;
+  sex?: string;
+  site?: string;
+  duration?: string;
+  symptoms?: string[];
+  riskFactors?: string[];
+  notes?: string;
+}
+
+interface SpectrumDocument {
+  format?: string;
+  version?: number;
+  capturedAt?: string;
+  device?: string;
+  channels?: SpectrumChannel[];
+  patient?: SpectrumPatient;
+}
+
+const isSpectrumFile = (file: File) => /\.spectrum$/i.test(file.name);
+
+const base64ToBytes = (data: string) => {
+  const raw = data.replace(/^data:[^,]*,/, "").replace(/\s+/g, "");
+  const bin = atob(raw);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i += 1) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+};
+
+const parseSpectrumFile = async (file: File): Promise<{ files: File[]; patient?: SpectrumPatient; capturedAt?: string; device?: string }> => {
+  let doc: SpectrumDocument;
+  try {
+    doc = JSON.parse(await file.text()) as SpectrumDocument;
+  } catch {
+    throw new Error("This .spectrum file is unreadable.");
+  }
+  if (doc?.format !== SPECTRUM_FORMAT || !Array.isArray(doc.channels)) {
+    throw new Error("Not a Dermio .spectrum capture.");
+  }
+  const base = file.name.replace(/\.spectrum$/i, "");
+  const files = CHANNELS.map((ch, i) => {
+    const entry = doc.channels!.find((c) => c.id === ch.id) ?? doc.channels![i];
+    if (!entry?.data) throw new Error(`Channel ${ch.id} (${ch.name}) is missing from the .spectrum file.`);
+    const mime = entry.mime || "image/jpeg";
+    const ext = mime.includes("png") ? "png" : mime.includes("webp") ? "webp" : "jpg";
+    return new File([base64ToBytes(entry.data)], `${base}-ch${ch.id}.${ext}`, { type: mime });
+  });
+  return { files, patient: doc.patient, capturedAt: doc.capturedAt, device: doc.device };
+};
+
+const SPECTRUM_SAMPLES = [
+  { label: "Nino B.", href: "/demo/melanoma.spectrum", download: "nino-beridze.spectrum" },
+  { label: "Giorgi K.", href: "/demo/bcc.spectrum", download: "giorgi-kapanadze.spectrum" },
+  { label: "Tamar L.", href: "/demo/sk.spectrum", download: "tamar-lomidze.spectrum" },
+  { label: "Mariam G.", href: "/demo/psoriasis.spectrum", download: "mariam-gelashvili.spectrum" },
+];
 
 /* ------------------------------------------------------------------ */
 /* Patient anamnesis                                                   */
@@ -442,7 +524,7 @@ const buildSegmentationLayers = async (src: string): Promise<SegmentationLayers 
 /* ------------------------------------------------------------------ */
 
 const inputClass =
-  "w-full h-8 rounded-md border border-slate-200 bg-white px-2.5 text-xs text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-clinical-blue/25 focus:border-clinical-blue transition";
+  "w-full h-9 rounded-md border border-slate-200 bg-white px-2.5 text-[13px] text-slate-800 placeholder:text-slate-400 outline-none focus:ring-2 focus:ring-clinical-blue/25 focus:border-clinical-blue transition";
 
 const Field = ({ label, children, className = "" }: { label: string; children: ReactNode; className?: string }) => (
   <label className={`block ${className}`}>
@@ -472,7 +554,7 @@ const ChipGroup = ({
             type="button"
             key={opt}
             onClick={() => onToggle(opt)}
-            className={`px-2 py-0.5 rounded-full text-[11px] border transition-colors ${
+            className={`px-2.5 py-1 rounded-full text-xs border transition-colors ${
               on ? "bg-clinical-blue border-clinical-blue text-white" : "bg-white border-slate-200 text-slate-600 hover:border-clinical-blue/60"
             }`}
           >
@@ -849,6 +931,9 @@ const Dashboard = () => {
   const [channelResults, setChannelResults] = useState<ChannelResult[]>([]);
   const [fusionInfo, setFusionInfo] = useState<{ used: number; total: number } | null>(null);
   const [view, setView] = useState<ViewKey>("ch1");
+  const [captureMode, setCaptureMode] = useState<"spectrum" | "images">("spectrum");
+  const [captureOpen, setCaptureOpen] = useState(false);
+  const spectrumInputRef = useRef<HTMLInputElement | null>(null);
   const [doctorId, setDoctorId] = useState("");
   const [scanDate, setScanDate] = useState<string | null>(null);
   const pendingViewRef = useRef<ViewKey | null>(null);
@@ -992,8 +1077,56 @@ const Dashboard = () => {
       return next;
     });
     setView(`ch${startIdx + 1}` as ViewKey);
+    setCaptureOpen(false);
     const ch = CHANNELS[startIdx];
     setStatus(entries.length > 1 ? `Loaded ${entries.length} channel images.` : `${ch.short} ${ch.name} ready.`);
+  };
+
+  /** Reads a `.spectrum` capture, fills the three channels and any patient data it carries. */
+  const handleSpectrumFile = async (file: File) => {
+    if (!isSpectrumFile(file)) {
+      setStatus("Please select a .spectrum capture file.");
+      return;
+    }
+    setStatus(`Reading ${file.name}…`);
+    try {
+      const { files, patient, device } = await parseSpectrumFile(file);
+      assignFiles(0, files);
+      if (patient) {
+        const str = (v: unknown) => (v === undefined || v === null ? "" : String(v));
+        setAnamnesis((prev) => ({
+          name: prev.name.trim() || str(patient.name),
+          patientId: prev.patientId.trim() || str(patient.patientId),
+          age: prev.age.trim() || str(patient.age),
+          sex: prev.sex || str(patient.sex),
+          site: prev.site.trim() || str(patient.site),
+          duration: prev.duration.trim() || str(patient.duration),
+          symptoms: prev.symptoms.length ? prev.symptoms : Array.isArray(patient.symptoms) ? patient.symptoms.map(String) : [],
+          riskFactors: prev.riskFactors.length ? prev.riskFactors : Array.isArray(patient.riskFactors) ? patient.riskFactors.map(String) : [],
+          notes: prev.notes.trim() || str(patient.notes),
+        }));
+      }
+      setStatus(`${file.name} loaded${device ? ` from ${device}` : ""}: 3 spectral channels${patient ? " and patient data" : ""}.`);
+    } catch (e: unknown) {
+      setStatus(e instanceof Error ? e.message : "Could not read the .spectrum file.");
+    }
+    if (spectrumInputRef.current) spectrumInputRef.current.value = "";
+  };
+
+  /** Drop target that accepts either a .spectrum capture or plain channel images. */
+  const handleCaptureDrop = (files: FileList) => {
+    const list = Array.from(files);
+    const spectrum = list.find(isSpectrumFile);
+    if (spectrum) {
+      void handleSpectrumFile(spectrum);
+      return;
+    }
+    if (list.some((f) => f.type.startsWith("image/"))) {
+      setCaptureMode("images");
+      assignFiles(0, list);
+      return;
+    }
+    setStatus("Drop a .spectrum capture or JPG/PNG channel images.");
   };
 
   const removeChannel = (idx: number) => {
@@ -1032,6 +1165,7 @@ const Dashboard = () => {
     setChannelResults([]);
     setFusionInfo(null);
     setView("ch1");
+    setCaptureOpen(false);
     setStatus("Registering spectral channels.");
 
     const timeline = [
@@ -1131,10 +1265,12 @@ const Dashboard = () => {
     });
     setSegmentationLayers(null);
     setView("ch1");
+    setCaptureOpen(false);
     setStatus("Waiting for spectral channels.");
     inputRefs.current.forEach((input) => {
       if (input) input.value = "";
     });
+    if (spectrumInputRef.current) spectrumInputRef.current.value = "";
   };
 
   /** Loads a stored demo scan: anamnesis, the three spectral photos and the saved result. */
@@ -1229,6 +1365,8 @@ const Dashboard = () => {
   const statusTone = loading ? "bg-sky-50 text-clinical-blue border-sky-200" : top ? "bg-emerald-50 text-emerald-700 border-emerald-200" : "bg-slate-100 text-slate-600 border-slate-200";
   const statusLabel = loading ? "Analyzing" : top ? "Complete" : allChannelsReady ? "Ready" : "Awaiting input";
 
+  const showCapture = !top && !loading && (!allChannelsReady || captureOpen);
+
   const panel = "bg-white border border-slate-200/80 rounded-xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]";
 
   return (
@@ -1313,106 +1451,23 @@ const Dashboard = () => {
       </header>
 
       <div className="flex-1 min-h-0 p-3 grid gap-3 grid-cols-1 md:grid-cols-[264px_1fr] lg:grid-cols-[264px_1fr_288px] xl:grid-cols-[288px_1fr_312px] md:grid-rows-[auto_auto] lg:grid-rows-1">
-        {/* Left: capture + anamnesis */}
-        <aside className={`${panel} md:row-span-2 lg:row-span-1 lg:min-h-0 lg:overflow-y-auto dash-scroll p-3 flex flex-col gap-3`}>
-          <section>
-            <SectionTitle
-              icon={Layers}
-              title="Spectral capture"
-              right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${allChannelsReady ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{loadedCount}/{CHANNELS.length}</span>}
-            />
-            <div className="space-y-1.5 mt-2">
-              {CHANNELS.map((ch, idx) => {
-                const slot = slots[idx];
-                const Icon = ch.icon;
-                return (
-                  <label
-                    key={ch.id}
-                    className={`relative flex items-center gap-2.5 rounded-lg border px-2 py-1.5 cursor-pointer group transition-colors ${
-                      slot ? "border-slate-200 bg-white hover:border-clinical-blue/60" : "border-dashed border-slate-300 bg-slate-50/60 hover:border-clinical-blue hover:bg-sky-50/40"
-                    }`}
-                    onDragOver={(e) => e.preventDefault()}
-                    onDrop={(e) => {
-                      e.preventDefault();
-                      if (e.dataTransfer.files?.length) assignFiles(idx, e.dataTransfer.files);
-                    }}
-                  >
-                    <input
-                      ref={(el) => {
-                        inputRefs.current[idx] = el;
-                      }}
-                      type="file"
-                      accept="image/*"
-                      multiple={idx === 0}
-                      className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files?.length) assignFiles(idx, e.target.files);
-                      }}
-                    />
-                    <div className="w-10 h-10 shrink-0 rounded-md overflow-hidden bg-slate-100 border border-slate-200/80 flex items-center justify-center">
-                      {slot ? <img src={slot.preview} alt={ch.name} className="w-full h-full object-cover" /> : <UploadCloud className="w-4 h-4 text-slate-400 group-hover:text-clinical-blue transition-colors" />}
-                    </div>
-                    <div className="min-w-0 flex-1 leading-tight">
-                      <div className="flex items-center gap-1.5">
-                        <span className={`inline-flex items-center gap-0.5 text-[9px] font-bold px-1 py-px rounded ${ch.badge}`}>
-                          <Icon className="w-2.5 h-2.5" />
-                          {ch.short.replace(" ", "")}
-                        </span>
-                        <span className="text-xs font-semibold text-slate-800 truncate">{ch.name}</span>
-                      </div>
-                      <p className="text-[10px] text-slate-500 truncate mt-0.5">{ch.detects}</p>
-                    </div>
-                    {slot ? (
-                      <button
-                        type="button"
-                        aria-label={`Remove ${ch.name} image`}
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          removeChannel(idx);
-                        }}
-                        className="shrink-0 p-1 rounded-full text-slate-400 hover:text-rose-600 hover:bg-rose-50 transition-colors"
-                      >
-                        <X className="w-3.5 h-3.5" />
-                      </button>
-                    ) : (
-                      <span className="shrink-0 text-[10px] text-slate-400 pr-1">Drop</span>
-                    )}
-                  </label>
-                );
-              })}
-            </div>
-            <div className="flex gap-2 mt-2.5">
-              <Button disabled={!allChannelsReady || loading} onClick={handleAnalyze} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold shadow-sm">
-                {loading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ScanSearch className="w-4 h-4" />}
-                Analyze
-              </Button>
-              <Button variant="outline" disabled={!loadedCount && !loading} onClick={handleClear} className="h-9 w-9 p-0 rounded-lg border-slate-300 text-slate-600" title="Clear all">
-                <RotateCcw className="w-4 h-4" />
-              </Button>
-            </div>
-            <p className="text-[11px] text-slate-500 mt-1.5 leading-snug">
-              {allChannelsReady || loading || top ? status : "Drop one photo per channel, or all three onto Ch1."}
-            </p>
-          </section>
+        {/* Left: patient & anamnesis */}
+        <aside ref={anamnesisRef} className={`${panel} md:row-span-2 lg:row-span-1 lg:min-h-0 lg:overflow-y-auto dash-scroll p-3.5 flex flex-col gap-3`}>
+          <SectionTitle
+            icon={ClipboardList}
+            title="Patient & anamnesis"
+            right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${anamnesisRows.length ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{anamnesisRows.length ? "Recorded" : "Optional"}</span>}
+          />
+          <p className="-mt-1.5 text-[11px] text-slate-500 leading-snug">Attached to the scan and printed in the report. Pick a stored patient from the top bar or fill in below.</p>
 
-          <div className="h-px bg-slate-200" />
-
-          <section ref={anamnesisRef}>
-            <SectionTitle
-              icon={ClipboardList}
-              title="Patient & anamnesis"
-              right={<span className={`text-[10px] px-1.5 py-0.5 rounded-full ${anamnesisRows.length ? "bg-emerald-50 text-emerald-700" : "bg-slate-100 text-slate-500"}`}>{anamnesisRows.length ? "Recorded" : "Optional"}</span>}
-            />
-            <div className="grid grid-cols-[1.5fr_1fr] gap-2 mt-2">
-              <Field label="Patient name">
-                <input className={inputClass} value={anamnesis.name} onChange={(e) => setAnamnesis((p) => ({ ...p, name: e.target.value }))} placeholder="სახელი გვარი" />
-              </Field>
+          <div className="space-y-2.5">
+            <Field label="Patient name">
+              <input className={inputClass} value={anamnesis.name} onChange={(e) => setAnamnesis((p) => ({ ...p, name: e.target.value }))} placeholder="სახელი გვარი" />
+            </Field>
+            <div className="grid grid-cols-[1.3fr_0.7fr_1fr] gap-2">
               <Field label="Patient ID">
                 <input className={inputClass} value={anamnesis.patientId} onChange={(e) => setAnamnesis((p) => ({ ...p, patientId: e.target.value }))} placeholder="P-2026-0412" />
               </Field>
-            </div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
               <Field label="Age">
                 <input className={inputClass} type="number" min={0} max={120} value={anamnesis.age} onChange={(e) => setAnamnesis((p) => ({ ...p, age: e.target.value }))} placeholder="yrs" />
               </Field>
@@ -1425,25 +1480,62 @@ const Dashboard = () => {
                 </select>
               </Field>
             </div>
-            <div className="grid grid-cols-2 gap-2 mt-2">
+            <div className="grid grid-cols-2 gap-2">
               <Field label="Lesion site">
                 <input className={inputClass} value={anamnesis.site} onChange={(e) => setAnamnesis((p) => ({ ...p, site: e.target.value }))} placeholder="left forearm" />
               </Field>
-              <Field label="Duration">
+              <Field label="Duration / evolution">
                 <input className={inputClass} value={anamnesis.duration} onChange={(e) => setAnamnesis((p) => ({ ...p, duration: e.target.value }))} placeholder="3 weeks, growing" />
               </Field>
             </div>
-            <ChipGroup label="Symptoms" options={SYMPTOM_OPTIONS} value={anamnesis.symptoms} onToggle={(opt) => toggleListValue("symptoms", opt)} />
-            <ChipGroup label="Risk factors" options={RISK_OPTIONS} value={anamnesis.riskFactors} onToggle={(opt) => toggleListValue("riskFactors", opt)} />
-            <Field label="Notes" className="mt-2.5">
-              <textarea className={`${inputClass} h-auto py-1.5 resize-none`} rows={2} value={anamnesis.notes} onChange={(e) => setAnamnesis((p) => ({ ...p, notes: e.target.value }))} placeholder="Previous treatments, medications, relevant history" />
-            </Field>
-          </section>
+          </div>
+
+          <ChipGroup label="Symptoms" options={SYMPTOM_OPTIONS} value={anamnesis.symptoms} onToggle={(opt) => toggleListValue("symptoms", opt)} />
+          <ChipGroup label="Risk factors" options={RISK_OPTIONS} value={anamnesis.riskFactors} onToggle={(opt) => toggleListValue("riskFactors", opt)} />
+
+          <Field label="Clinical notes" className="flex-1 flex flex-col min-h-[96px]">
+            <textarea className={`${inputClass} h-full min-h-[96px] py-2 resize-none flex-1`} value={anamnesis.notes} onChange={(e) => setAnamnesis((p) => ({ ...p, notes: e.target.value }))} placeholder="Previous treatments, medications, family history, relevant findings" />
+          </Field>
+
+          <div className="flex items-center justify-between pt-1 border-t border-slate-100">
+            <span className="text-[10px] text-slate-400">{anamnesisRows.length} of 9 fields recorded</span>
+            <button type="button" onClick={() => setAnamnesis(EMPTY_ANAMNESIS)} className="text-[11px] text-slate-500 hover:text-rose-600 transition-colors">Clear form</button>
+          </div>
         </aside>
 
         {/* Center: viewer */}
         <section className={`${panel} lg:min-h-0 flex flex-col p-3`}>
           <div className="flex items-center justify-between gap-3 flex-wrap">
+            {showCapture ? (
+              <div className="flex items-center gap-2">
+                <div className="inline-flex rounded-lg bg-slate-100 p-0.5 gap-0.5">
+                  <button
+                    type="button"
+                    onClick={() => setCaptureMode("spectrum")}
+                    className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${captureMode === "spectrum" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                  >
+                    <FileUp className="w-3.5 h-3.5" />
+                    .spectrum file
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCaptureMode("images")}
+                    className={`inline-flex items-center gap-1.5 px-3 h-7 rounded-md text-[11px] font-medium transition-colors whitespace-nowrap ${captureMode === "images" ? "bg-white text-slate-900 shadow-sm" : "text-slate-600 hover:text-slate-900"}`}
+                  >
+                    <Images className="w-3.5 h-3.5" />
+                    Images
+                    <span className={`ml-0.5 text-[9px] px-1 py-px rounded ${allChannelsReady ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-600"}`}>{loadedCount}/{CHANNELS.length}</span>
+                  </button>
+                </div>
+                {allChannelsReady && (
+                  <button type="button" onClick={() => setCaptureOpen(false)} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-slate-200 bg-white text-[11px] font-medium text-slate-700 hover:border-clinical-blue/60 transition-colors">
+                    <Eye className="w-3.5 h-3.5 text-clinical-blue" />
+                    View images
+                  </button>
+                )}
+              </div>
+            ) : (
+            <div className="flex items-center gap-2">
             <div className="inline-flex rounded-lg bg-slate-100 p-0.5 gap-0.5">
               {views.map((v) => {
                 const available = isAvailable(v);
@@ -1463,6 +1555,14 @@ const Dashboard = () => {
                 );
               })}
             </div>
+            {!top && !loading && (
+              <button type="button" onClick={() => setCaptureOpen(true)} className="inline-flex items-center gap-1 h-7 px-2.5 rounded-md border border-slate-200 bg-white text-[11px] font-medium text-slate-700 hover:border-clinical-blue/60 transition-colors" title="Change channel images">
+                <Pencil className="w-3.5 h-3.5 text-slate-500" />
+                Channels
+              </button>
+            )}
+            </div>
+            )}
             <ol className="flex items-center gap-1 text-[11px]">
               {STEP_LABELS.map((label, i) => {
                 const n = i + 1;
@@ -1485,6 +1585,123 @@ const Dashboard = () => {
             </ol>
           </div>
 
+          {showCapture ? (
+            <div
+              className="relative mt-2.5 h-[46vh] md:h-auto md:aspect-[4/3] lg:aspect-auto lg:flex-1 lg:min-h-0 rounded-lg bg-slate-900 overflow-hidden p-3 sm:p-4 flex flex-col"
+              onDragOver={(e) => e.preventDefault()}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (e.dataTransfer.files?.length) handleCaptureDrop(e.dataTransfer.files);
+              }}
+            >
+              {captureMode === "spectrum" ? (
+                <label className="flex-1 min-h-0 rounded-xl border-2 border-dashed border-slate-600 hover:border-sky-400 bg-slate-800/40 hover:bg-slate-800/70 transition-colors cursor-pointer flex flex-col items-center justify-center text-center px-6 group">
+                  <input
+                    ref={spectrumInputRef}
+                    type="file"
+                    accept=".spectrum,application/json"
+                    className="hidden"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0];
+                      if (f) void handleSpectrumFile(f);
+                    }}
+                  />
+                  <div className="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-700 group-hover:border-sky-500/60 flex items-center justify-center mb-4 transition-colors">
+                    <FileUp className="w-6 h-6 text-sky-300" />
+                  </div>
+                  <p className="text-slate-100 text-base font-semibold">Drop a .spectrum capture here</p>
+                  <p className="text-slate-400 text-xs mt-1.5 max-w-md leading-relaxed">
+                    One file from the Dermio scanner that bundles all three spectral channels (non-polarized, polarized, UV / blue light) and, optionally, the patient record. Or click to browse.
+                  </p>
+                  <span className="mt-4 inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-clinical-blue text-white text-xs font-semibold shadow-sm group-hover:bg-clinical-blue/90 transition-colors">
+                    <FileUp className="w-3.5 h-3.5" />
+                    Browse .spectrum file
+                  </span>
+                  <div className="mt-5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
+                    <span>Sample captures:</span>
+                    {SPECTRUM_SAMPLES.map((smp) => (
+                      <a key={smp.href} href={smp.href} download={smp.download} onClick={(e) => e.stopPropagation()} className="text-sky-300 hover:text-sky-200 underline underline-offset-2">
+                        {smp.label}
+                      </a>
+                    ))}
+                  </div>
+                </label>
+              ) : (
+                <>
+                  <div className="flex-1 min-h-0 grid grid-cols-3 gap-3">
+                    {CHANNELS.map((ch, idx) => {
+                      const slot = slots[idx];
+                      const Icon = ch.icon;
+                      return (
+                        <label
+                          key={ch.id}
+                          className={`relative min-h-0 rounded-xl border-2 border-dashed overflow-hidden cursor-pointer flex flex-col group transition-colors ${
+                            slot ? "border-slate-600 bg-slate-800/60 hover:border-sky-400" : "border-slate-600 bg-slate-800/40 hover:border-sky-400 hover:bg-slate-800/70"
+                          }`}
+                          onDragOver={(e) => e.preventDefault()}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (e.dataTransfer.files?.length) assignFiles(idx, e.dataTransfer.files);
+                          }}
+                        >
+                          <input
+                            ref={(el) => {
+                              inputRefs.current[idx] = el;
+                            }}
+                            type="file"
+                            accept="image/*"
+                            multiple={idx === 0}
+                            className="hidden"
+                            onChange={(e) => {
+                              if (e.target.files?.length) assignFiles(idx, e.target.files);
+                            }}
+                          />
+                          <div className="flex items-center justify-between gap-2 px-3 pt-2.5">
+                            <span className={`inline-flex items-center gap-1 text-[10px] font-bold px-1.5 py-0.5 rounded ${ch.badge}`}>
+                              <Icon className="w-3 h-3" />
+                              {ch.short}
+                            </span>
+                            {slot ? (
+                              <button
+                                type="button"
+                                aria-label={`Remove ${ch.name} image`}
+                                onClick={(e) => {
+                                  e.preventDefault();
+                                  e.stopPropagation();
+                                  removeChannel(idx);
+                                }}
+                                className="p-1 rounded-full text-slate-400 hover:text-rose-400 hover:bg-slate-700 transition-colors"
+                              >
+                                <X className="w-3.5 h-3.5" />
+                              </button>
+                            ) : (
+                              <span className="text-[10px] text-slate-500">Empty</span>
+                            )}
+                          </div>
+                          <div className="flex-1 min-h-0 flex items-center justify-center px-3 py-2">
+                            {slot ? (
+                              <img src={slot.preview} alt={ch.name} className="max-h-full max-w-full object-contain rounded-md" />
+                            ) : (
+                              <div className="w-11 h-11 rounded-xl bg-slate-800 border border-slate-700 group-hover:border-sky-500/60 flex items-center justify-center transition-colors">
+                                <UploadCloud className="w-5 h-5 text-slate-400 group-hover:text-sky-300 transition-colors" />
+                              </div>
+                            )}
+                          </div>
+                          <div className="px-3 pb-2.5 leading-tight">
+                            <p className="text-xs font-semibold text-slate-100">{ch.name}</p>
+                            <p className="text-[10px] text-slate-400 mt-0.5 line-clamp-2">{ch.detects}</p>
+                            <p className="text-[10px] text-sky-300/90 mt-1 truncate">{slot ? slot.file.name : "Drop image or click to browse"}</p>
+                          </div>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <p className="text-[11px] text-slate-500 text-center mt-2.5">Drop all three photos onto Ch 1 to fill the channels in order.</p>
+                </>
+              )}
+            </div>
+          ) : (
           <div className="relative mt-2.5 h-[46vh] md:h-auto md:aspect-[4/3] lg:aspect-auto lg:flex-1 lg:min-h-0 rounded-lg bg-slate-900 overflow-hidden flex items-center justify-center">
             {activeAvailable && activeView.src ? (
               <div className="relative inline-flex max-h-full max-w-full">
@@ -1520,7 +1737,7 @@ const Dashboard = () => {
                   <ImagePlus className="w-5 h-5 text-slate-500" />
                 </div>
                 <p className="text-slate-300 text-sm font-medium">{activeView.src ? "Available after analysis" : "No image for this view"}</p>
-                <p className="text-slate-500 text-xs mt-1">{activeView.src ? `${activeView.label} is produced at stage ${activeView.stageReq}.` : "Add the three spectral photos in the left panel."}</p>
+                <p className="text-slate-500 text-xs mt-1">{activeView.src ? `${activeView.label} is produced at stage ${activeView.stageReq}.` : "Load a .spectrum capture or three channel images."}</p>
               </div>
             )}
 
@@ -1561,8 +1778,10 @@ const Dashboard = () => {
               <span className="absolute left-2.5 bottom-2.5 text-[10px] text-slate-300 bg-slate-900/60 px-1.5 py-0.5 rounded pointer-events-none max-w-[50%] truncate">{slots[activeView.channel.id - 1]!.file.name}</span>
             )}
           </div>
+          )}
 
           {/* Filmstrip */}
+          {!showCapture && (
           <div className="mt-2.5 grid grid-cols-6 gap-1.5 w-full max-w-[860px] mx-auto">
             {views.map((v) => {
               const available = isAvailable(v);
@@ -1596,6 +1815,7 @@ const Dashboard = () => {
               );
             })}
           </div>
+          )}
         </section>
 
         {/* Right: assessment */}
@@ -1644,8 +1864,18 @@ const Dashboard = () => {
                       <span className={anamnesisRows.length ? "text-slate-700" : "text-slate-400"}>Anamnesis (optional)</span>
                     </li>
                   </ul>
-                  <p className="text-[11px] text-slate-500 leading-snug">Each spectral channel is evaluated separately; the probabilities are fused into one combined result with a malignancy risk band.</p>
-                  {status.startsWith("Error") || status.startsWith("Backend") ? <p className="text-[11px] text-rose-600 leading-snug">{status}</p> : null}
+                  <div className="flex gap-2 pt-1">
+                    <Button disabled={!allChannelsReady} onClick={() => void handleAnalyze()} className="flex-1 h-9 rounded-lg bg-clinical-blue hover:bg-clinical-blue/90 text-white text-[13px] font-semibold shadow-sm">
+                      <ScanSearch className="w-4 h-4" />
+                      Analyze
+                    </Button>
+                    <Button variant="outline" disabled={!loadedCount} onClick={handleClear} className="h-9 w-9 p-0 rounded-lg border-slate-300 text-slate-600" title="Clear channels">
+                      <RotateCcw className="w-4 h-4" />
+                    </Button>
+                  </div>
+                  <p className={`text-[11px] leading-snug ${status.startsWith("Error") || status.startsWith("Analysis service") || status.startsWith("Not a") || status.startsWith("This .spectrum") || status.startsWith("Channel ") || status.startsWith("Could not") ? "text-rose-600" : "text-slate-500"}`}>
+                    {allChannelsReady ? status : "Load a .spectrum capture or three channel images in the viewer, then run the combined analysis."}
+                  </p>
                 </>
               )}
             </div>
