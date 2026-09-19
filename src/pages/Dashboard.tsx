@@ -854,7 +854,7 @@ const renderReport = async (win: Window, data: ReportData) => {
       <div class="dxrow"><span class="dx">${escapeHtml(top.label)}</span><span class="conf">${(top.score * 100).toFixed(1)}% confidence</span></div>
       ${
         band
-          ? `<div>Malignancy risk <span class="band band-${band.tone}">${band.label}</span> <span class="muted">${(risk * 100).toFixed(0)}% malignant-class probability</span></div>
+          ? `<div>Malignancy risk <span class="band band-${band.tone}">${band.label}</span> <span class="muted">${(risk * 100).toFixed(0)}% probability of skin cancer (melanoma, BCC, SCC)</span></div>
       <div class="riskbar"><i style="left:${(risk * 100).toFixed(1)}%"></i></div>
       <div class="advice">${escapeHtml(band.advice)}</div>`
           : ""
@@ -1930,7 +1930,7 @@ const Dashboard = () => {
                 </div>
                 <div className="flex items-baseline gap-2 mt-0.5">
                   <span className="text-2xl font-bold font-display leading-none">{band.label}</span>
-                  <span className="text-xs font-medium opacity-80">{((riskScore ?? 0) * 100).toFixed(0)}% malignant-class probability</span>
+                  <span className="text-xs font-medium opacity-80">{((riskScore ?? 0) * 100).toFixed(0)}% probability of skin cancer (melanoma, BCC, SCC)</span>
                 </div>
                 <div className="relative mt-2.5 h-1.5 rounded-full overflow-hidden flex">
                   <span className="h-full bg-emerald-300" style={{ width: "20%" }} />
