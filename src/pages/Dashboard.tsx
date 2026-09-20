@@ -40,6 +40,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import DermioLogo from "@/components/DermioLogo";
+import { analyzeLesion, type LesionAnalysis } from "@/lib/lesionAnalysis";
 import { DEMO_PATIENTS_BY_DATE, type DemoPatient } from "@/data/demoPatients";
 
 const AUTH_KEY = "doctor_auth_session";
@@ -88,13 +89,6 @@ interface AnalyzePayload {
   channels?: ChannelResult[];
   fusion?: { method: string; channels_used: number[]; channels_total: number };
   detail?: string;
-}
-
-interface SegmentationLayers {
-  normalSkin: string;
-  comedones: string;
-  hyperPigmentation: string;
-  activeAcne: string;
 }
 
 /* ------------------------------------------------------------------ */
@@ -290,46 +284,6 @@ const formatScanDate = (iso: string) => {
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
-const blurAlpha = (src: Uint8Array, w: number, h: number, radius = 1) => {
-  const dst = new Uint8Array(src.length);
-  for (let y = 0; y < h; y += 1) {
-    for (let x = 0; x < w; x += 1) {
-      let sum = 0;
-      let count = 0;
-      for (let dy = -radius; dy <= radius; dy += 1) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= h) continue;
-        for (let dx = -radius; dx <= radius; dx += 1) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= w) continue;
-          sum += src[ny * w + nx];
-          count += 1;
-        }
-      }
-      dst[y * w + x] = Math.round(sum / Math.max(1, count));
-    }
-  }
-  return dst;
-};
-
-const alphaToDataUrl = (alpha: Uint8Array, w: number, h: number, r: number, g: number, b: number) => {
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return "";
-  const img = ctx.createImageData(w, h);
-  for (let i = 0; i < alpha.length; i += 1) {
-    const p = i * 4;
-    img.data[p] = r;
-    img.data[p + 1] = g;
-    img.data[p + 2] = b;
-    img.data[p + 3] = alpha[i];
-  }
-  ctx.putImageData(img, 0, 0);
-  return canvas.toDataURL("image/png");
-};
-
 const loadImage = (src: string) =>
   new Promise<HTMLImageElement | null>((resolve) => {
     const img = new Image();
@@ -339,8 +293,9 @@ const loadImage = (src: string) =>
   });
 
 /**
- * Fuses the captured spectral channels into one image: every layer is
- * registered onto the first channel's frame and pixel-averaged with equal weight.
+ * Fuses the captured spectral channels into one natural-looking digital map:
+ * colour comes from the non-polarized/polarized pair, luminance detail is the
+ * mean of all channels (so UV / blue-light structure contributes without a colour cast).
  */
 const buildFusedMap = async (sources: string[]): Promise<string | null> => {
   const images = (await Promise.all(sources.map(loadImage))).filter((img): img is HTMLImageElement => Boolean(img));
@@ -352,172 +307,44 @@ const buildFusedMap = async (sources: string[]): Promise<string | null> => {
   const canvas = document.createElement("canvas");
   canvas.width = w;
   canvas.height = h;
-  const ctx = canvas.getContext("2d");
+  const ctx = canvas.getContext("2d", { willReadFrequently: true });
   if (!ctx) return null;
-  // Sequential alpha 1, 1/2, 1/3 yields an equal-weight mean of all layers.
-  images.forEach((img, i) => {
-    ctx.globalAlpha = 1 / (i + 1);
+  const frames = images.map((img) => {
+    ctx.clearRect(0, 0, w, h);
     ctx.drawImage(img, 0, 0, w, h);
+    return ctx.getImageData(0, 0, w, h).data;
   });
-  ctx.globalAlpha = 1;
+  const colourFrames = frames.slice(0, Math.min(2, frames.length));
+  const out = ctx.createImageData(w, h);
+  const n = w * h;
+  for (let i = 0; i < n; i += 1) {
+    const p = i * 4;
+    let r = 0;
+    let g = 0;
+    let b = 0;
+    colourFrames.forEach((f) => {
+      r += f[p];
+      g += f[p + 1];
+      b += f[p + 2];
+    });
+    r /= colourFrames.length;
+    g /= colourFrames.length;
+    b /= colourFrames.length;
+    let lum = 0;
+    frames.forEach((f) => {
+      lum += 0.299 * f[p] + 0.587 * f[p + 1] + 0.114 * f[p + 2];
+    });
+    lum /= frames.length;
+    const baseLum = 0.299 * r + 0.587 * g + 0.114 * b;
+    const k = baseLum > 1 ? Math.min(2.2, lum / baseLum) : 1;
+    out.data[p] = Math.min(255, r * k);
+    out.data[p + 1] = Math.min(255, g * k);
+    out.data[p + 2] = Math.min(255, b * k);
+    out.data[p + 3] = 255;
+  }
+  ctx.putImageData(out, 0, 0);
   return canvas.toDataURL("image/jpeg", 0.9);
 };
-
-const buildSegmentationLayers = async (src: string): Promise<SegmentationLayers | null> =>
-  new Promise((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      const maxW = 360;
-      const maxH = 280;
-      const scale = Math.min(1, maxW / img.width, maxH / img.height);
-      const w = Math.max(120, Math.round(img.width * scale));
-      const h = Math.max(120, Math.round(img.height * scale));
-
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) {
-        resolve(null);
-        return;
-      }
-
-      ctx.drawImage(img, 0, 0, w, h);
-      const frame = ctx.getImageData(0, 0, w, h);
-      const px = frame.data;
-      const size = w * h;
-      const skinMask = new Uint8Array(size);
-
-      for (let i = 0; i < size; i += 1) {
-        const p = i * 4;
-        const r = px[p];
-        const g = px[p + 1];
-        const b = px[p + 2];
-        const cMax = Math.max(r, g, b);
-        const cMin = Math.min(r, g, b);
-        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        const cb = 128 - 0.168736 * r - 0.331264 * g + 0.5 * b;
-        const cr = 128 + 0.5 * r - 0.418688 * g - 0.081312 * b;
-        const rgbRule = r > 60 && g > 35 && b > 20 && r > g && r > b && Math.abs(r - g) > 10 && (cMax - cMin) > 15;
-        const ycrcbRule = cr > 133 && cr < 182 && cb > 82 && cb < 138;
-        skinMask[i] = (luma > 35 && luma < 242 && (rgbRule || ycrcbRule)) ? 1 : 0;
-      }
-
-      const visited = new Uint8Array(size);
-      const faceMask = new Uint8Array(size);
-      let best: number[] = [];
-
-      for (let i = 0; i < size; i += 1) {
-        if (!skinMask[i] || visited[i]) continue;
-        const queue: number[] = [i];
-        const comp: number[] = [];
-        visited[i] = 1;
-
-        for (let q = 0; q < queue.length; q += 1) {
-          const cur = queue[q];
-          comp.push(cur);
-          const x = cur % w;
-          const y = Math.floor(cur / w);
-          const candidates = [
-            x > 0 ? cur - 1 : -1,
-            x < w - 1 ? cur + 1 : -1,
-            y > 0 ? cur - w : -1,
-            y < h - 1 ? cur + w : -1,
-          ];
-          for (let k = 0; k < candidates.length; k += 1) {
-            const n = candidates[k];
-            if (n < 0 || visited[n] || !skinMask[n]) continue;
-            visited[n] = 1;
-            queue.push(n);
-          }
-        }
-
-        if (comp.length > best.length) best = comp;
-      }
-
-      if (best.length < Math.floor(size * 0.02)) {
-        for (let i = 0; i < size; i += 1) faceMask[i] = skinMask[i];
-      } else {
-        for (let i = 0; i < best.length; i += 1) faceMask[best[i]] = 1;
-      }
-
-      const normal = new Uint8Array(size);
-      const comedones = new Uint8Array(size);
-      const hyper = new Uint8Array(size);
-      const acne = new Uint8Array(size);
-
-      let sumRed = 0;
-      let sumDark = 0;
-      let sumBrown = 0;
-      let n = 0;
-
-      for (let i = 0; i < size; i += 1) {
-        if (!faceMask[i]) continue;
-        const p = i * 4;
-        const r = px[p];
-        const g = px[p + 1];
-        const b = px[p + 2];
-        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        sumRed += r - (g + b) / 2;
-        sumDark += 255 - luma;
-        sumBrown += (r + g) / 2 - b;
-        n += 1;
-      }
-
-      const meanRed = sumRed / Math.max(1, n);
-      const meanDark = sumDark / Math.max(1, n);
-      const meanBrown = sumBrown / Math.max(1, n);
-
-      for (let i = 0; i < size; i += 1) {
-        if (!faceMask[i]) continue;
-        const p = i * 4;
-        const r = px[p];
-        const g = px[p + 1];
-        const b = px[p + 2];
-        const maxC = Math.max(r, g, b);
-        const minC = Math.min(r, g, b);
-        const delta = maxC - minC;
-        const sat = maxC === 0 ? 0 : delta / maxC;
-        const luma = 0.299 * r + 0.587 * g + 0.114 * b;
-        const red = r - (g + b) / 2;
-        const dark = 255 - luma;
-        const brown = (r + g) / 2 - b;
-
-        let hue = 0;
-        if (delta > 0) {
-          if (maxC === r) hue = ((g - b) / delta) % 6;
-          else if (maxC === g) hue = (b - r) / delta + 2;
-          else hue = (r - g) / delta + 4;
-          hue *= 60;
-          if (hue < 0) hue += 360;
-        }
-        const redHue = hue <= 25 || hue >= 335;
-
-        const acneLike = redHue && sat > 0.24 && red > meanRed + 10 && luma > 35 && luma < 220;
-        const comedoneLike = dark > meanDark + 14 && sat > 0.12 && luma > 28 && luma < 180;
-        const hyperLike = brown > meanBrown + 10 && red < meanRed + 10 && luma > 35 && luma < 205;
-
-        if (acneLike) acne[i] = clamp(Math.round(180 + (red - meanRed) * 2.3), 0, 235);
-        else if (comedoneLike) comedones[i] = clamp(Math.round(160 + (dark - meanDark) * 1.8), 0, 220);
-        else if (hyperLike) hyper[i] = clamp(Math.round(145 + (brown - meanBrown) * 1.7), 0, 210);
-        else normal[i] = 150;
-      }
-
-      const normalBlur = blurAlpha(normal, w, h, 1);
-      const comedonesBlur = blurAlpha(comedones, w, h, 1);
-      const hyperBlur = blurAlpha(hyper, w, h, 1);
-      const acneBlur = blurAlpha(acne, w, h, 1);
-
-      resolve({
-        normalSkin: alphaToDataUrl(normalBlur, w, h, 142, 205, 242),
-        comedones: alphaToDataUrl(comedonesBlur, w, h, 242, 218, 58),
-        hyperPigmentation: alphaToDataUrl(hyperBlur, w, h, 154, 98, 201),
-        activeAcne: alphaToDataUrl(acneBlur, w, h, 240, 76, 53),
-      });
-    };
-    img.onerror = () => resolve(null);
-    img.src = src;
-  });
 
 /* ------------------------------------------------------------------ */
 /* Small form primitives                                               */
@@ -617,6 +444,7 @@ interface ReportData {
   date: string | null;
   doctorId: string;
   images: ReportImages;
+  lesion: LesionAnalysis | null;
 }
 
 const REPORT_IMAGE_WIDTH = 640;
@@ -637,8 +465,7 @@ const imageToJpeg = async (src: string, maxW = REPORT_IMAGE_WIDTH): Promise<stri
   return canvas.toDataURL("image/jpeg", 0.85);
 };
 
-/** Draws the segmentation layers over the fused map, matching the viewer's opacities. */
-const compositeSegmentation = async (base: string, layers: SegmentationLayers, maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
+const drawOverlays = async (base: string, overlays: [string, number][], maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
   const img = await loadImage(base);
   if (!img) return null;
   const scale = Math.min(1, maxW / img.width);
@@ -650,12 +477,6 @@ const compositeSegmentation = async (base: string, layers: SegmentationLayers, m
   const ctx = canvas.getContext("2d");
   if (!ctx) return null;
   ctx.drawImage(img, 0, 0, w, h);
-  const overlays: [string, number][] = [
-    [layers.normalSkin, 0.5],
-    [layers.comedones, 0.65],
-    [layers.hyperPigmentation, 0.65],
-    [layers.activeAcne, 0.7],
-  ];
   for (const [src, alpha] of overlays) {
     const layer = await loadImage(src);
     if (!layer) continue;
@@ -666,50 +487,19 @@ const compositeSegmentation = async (base: string, layers: SegmentationLayers, m
   return canvas.toDataURL("image/jpeg", 0.85);
 };
 
-/** Paints the same inflammation hotspots the viewer shows, multiplied onto the fused map. */
-const compositeHeatmap = async (base: string, maxW = REPORT_IMAGE_WIDTH): Promise<string | null> => {
-  const img = await loadImage(base);
-  if (!img) return null;
-  const scale = Math.min(1, maxW / img.width);
-  const w = Math.max(1, Math.round(img.width * scale));
-  const h = Math.max(1, Math.round(img.height * scale));
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return null;
-  ctx.drawImage(img, 0, 0, w, h);
-  ctx.globalCompositeOperation = "multiply";
-  const blobs = [
-    { top: 0.22, left: 0.34, bw: 0.22, bh: 0.28, a: 0.6 },
-    { top: 0.52, left: 0.22, bw: 0.26, bh: 0.22, a: 0.45 },
-    { top: 0.62, left: 0.45, bw: 0.16, bh: 0.2, a: 0.45 },
-  ];
-  blobs.forEach((b) => {
-    const cx = (b.left + b.bw / 2) * w;
-    const cy = (b.top + b.bh / 2) * h;
-    const r = (Math.max(b.bw * w, b.bh * h) / 2) * 1.5;
-    const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
-    g.addColorStop(0, `rgba(239,68,68,${b.a})`);
-    g.addColorStop(0.55, `rgba(239,68,68,${b.a * 0.55})`);
-    g.addColorStop(1, "rgba(239,68,68,0)");
-    ctx.fillStyle = g;
-    ctx.fillRect(cx - r, cy - r, r * 2, r * 2);
-  });
-  ctx.globalCompositeOperation = "source-over";
-  return canvas.toDataURL("image/jpeg", 0.85);
-};
+/** Colour zones + lesion outline over the fused map, matching the viewer. */
+const compositeSegmentation = (base: string, lesion: LesionAnalysis) =>
+  drawOverlays(base, [...lesion.layers.map((l): [string, number] => [l.url, 0.55]), [lesion.contour, 0.95]]);
 
-const buildReportImages = async (
-  channelSources: (string | null)[],
-  fused: string | null,
-  layers: SegmentationLayers | null
-): Promise<ReportImages> => {
+/** Attention heatmap + lesion outline over the fused map, matching the viewer. */
+const compositeHeatmap = (base: string, lesion: LesionAnalysis) => drawOverlays(base, [[lesion.heatmap, 0.9], [lesion.contour, 0.6]]);
+
+const buildReportImages = async (channelSources: (string | null)[], fused: string | null, lesion: LesionAnalysis | null): Promise<ReportImages> => {
   const [channels, fusedJpeg, heatmap, segmentation] = await Promise.all([
     Promise.all(channelSources.map((src) => (src ? imageToJpeg(src) : Promise.resolve(null)))),
     fused ? imageToJpeg(fused) : Promise.resolve(null),
-    fused ? compositeHeatmap(fused) : Promise.resolve(null),
-    fused && layers ? compositeSegmentation(fused, layers) : Promise.resolve(null),
+    fused && lesion ? compositeHeatmap(fused, lesion) : Promise.resolve(null),
+    fused && lesion ? compositeSegmentation(fused, lesion) : Promise.resolve(null),
   ]);
   return { channels, fused: fusedJpeg, heatmap, segmentation };
 };
@@ -737,7 +527,7 @@ const openReportWindow = (): Window | null => {
 
 /** Renders the single-page A4 report into `win` and opens the print dialog once every image has loaded. */
 const renderReport = async (win: Window, data: ReportData) => {
-  const { anamnesis, top, predictions, riskScore, channelResults, fusion, date, doctorId, images } = data;
+  const { anamnesis, top, predictions, riskScore, channelResults, fusion, date, doctorId, images, lesion } = data;
   const desc = truncateText(DISEASE_REPORTS[top.label] || `Detected: ${top.label}`, 520);
   const band = riskScore !== null ? riskBand(riskScore) : null;
   const risk = riskScore ?? 0;
@@ -760,8 +550,8 @@ const renderReport = async (win: Window, data: ReportData) => {
   const imagesHtml = [
     ...CHANNELS.map((ch, i) => figure(images.channels[i] ?? null, `${ch.short} · ${ch.name}`, ch.detects)),
     figure(images.fused, "Unified digital map", "Three spectral layers fused"),
-    figure(images.heatmap, "Inflammation heatmap", "Inflammation and vascular signal"),
-    figure(images.segmentation, "Segmentation", "Red damaged · yellow comedones · purple pigmentation · blue normal"),
+    figure(images.heatmap, "Attention heatmap", "Pigment density · colour variegation · vascular signal"),
+    figure(images.segmentation, "Lesion segmentation", lesion ? lesion.layers.filter((l) => l.pct > 0).map((l) => `${l.label} ${l.pct}%`).join(" · ") : "Lesion border and colour zones"),
   ].join("");
 
   const rankingRows = predictions
@@ -811,6 +601,7 @@ const renderReport = async (win: Window, data: ReportData) => {
   tr:last-child th, tr:last-child td { border-bottom: 0; }
   th { color: #64748b; font-weight: 600; white-space: nowrap; width: 1%; padding-right: 8px; }
   .kv td { color: #0f172a; }
+  .feat th, .feat td { font-size: 9px; padding: 1.5px 4px; }
   .result .dxrow { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 1px 0 3px; }
   .result .dx { font-size: 17px; font-weight: 700; line-height: 1.1; }
   .result .conf { font-size: 13px; font-weight: 700; color: #2563eb; font-variant-numeric: tabular-nums; white-space: nowrap; }
@@ -857,6 +648,13 @@ const renderReport = async (win: Window, data: ReportData) => {
           ? `<div>Malignancy risk <span class="band band-${band.tone}">${band.label}</span> <span class="muted">${(risk * 100).toFixed(0)}% probability of skin cancer (melanoma, BCC, SCC)</span></div>
       <div class="riskbar"><i style="left:${(risk * 100).toFixed(1)}%"></i></div>
       <div class="advice">${escapeHtml(band.advice)}</div>`
+          : ""
+      }
+      ${
+        lesion
+          ? `<div class="label" style="margin-top:6px">Dermoscopic features (image-derived)</div>
+      <table class="feat"><tr><th>Area</th><td>${lesion.metrics.areaPct}% of field · Ø ${lesion.metrics.diameterPct}% width</td><th>Asymmetry</th><td>${lesion.metrics.asymmetryAxes}/2 axes (${Math.round(lesion.metrics.asymmetry * 100)}% mismatch)</td></tr>
+      <tr><th>Border</th><td>${lesion.metrics.borderSegments}/8 abrupt segments</td><th>Colours</th><td>${lesion.metrics.colours.length}: ${escapeHtml(lesion.metrics.colours.map((c) => c.label).join(", ") || "–")}</td></tr></table>`
           : ""
       }
       <div class="label" style="margin-top:6px">Fused ranking</div>
@@ -924,7 +722,7 @@ const Dashboard = () => {
   const [loading, setLoading] = useState(false);
   const [stage, setStage] = useState(0);
   const [analysisStarted, setAnalysisStarted] = useState(false);
-  const [segmentationLayers, setSegmentationLayers] = useState<SegmentationLayers | null>(null);
+  const [lesion, setLesion] = useState<LesionAnalysis | null>(null);
   const [predictions, setPredictions] = useState<Prediction[]>([]);
   const [top, setTop] = useState<Prediction | null>(null);
   const [riskScore, setRiskScore] = useState<number | null>(null);
@@ -994,14 +792,15 @@ const Dashboard = () => {
   useEffect(() => {
     let cancelled = false;
     if (!fusedPreview) {
-      setSegmentationLayers(null);
+      setLesion(null);
       return () => {
         cancelled = true;
       };
     }
-    buildSegmentationLayers(fusedPreview).then((layers) => {
+    const current = slotsRef.current;
+    analyzeLesion({ base: current[0]?.preview ?? fusedPreview, polarized: current[1]?.preview ?? null }).then((result) => {
       if (cancelled) return;
-      setSegmentationLayers(layers);
+      setLesion(result);
     });
     return () => {
       cancelled = true;
@@ -1018,8 +817,8 @@ const Dashboard = () => {
       channel: ch,
     })),
     { key: "fused", label: "Fused map", caption: "Three spectral layers merged into one digital map", stageReq: 2, src: fusedPreview },
-    { key: "heatmap", label: "Heatmap", caption: "Inflammation and vascular signal on the fused map", stageReq: 3, src: fusedPreview },
-    { key: "segmentation", label: "Segmentation", caption: "Lesion zones on the fused map", stageReq: 4, src: fusedPreview },
+    { key: "heatmap", label: "Heatmap", caption: "Pigment density, colour variegation and vascular signal", stageReq: 3, src: fusedPreview },
+    { key: "segmentation", label: "Segmentation", caption: "Lesion border and dermoscopic colour zones", stageReq: 4, src: fusedPreview },
   ];
   const isAvailable = (v: ViewDef) => Boolean(v.src) && (v.stageReq === 1 || (analysisStarted && stage >= v.stageReq));
   const activeView = views.find((v) => v.key === view) ?? views[0];
@@ -1171,8 +970,8 @@ const Dashboard = () => {
     const timeline = [
       { at: 1200, stage: 1, text: "Registering 3 spectral channels." },
       { at: 3600, stage: 2, text: "Fusing layers into unified digital map." },
-      { at: 6200, stage: 3, text: "Mapping inflammation and vascular signal." },
-      { at: 8600, stage: 4, text: "Segmenting lesion zones." },
+      { at: 6200, stage: 3, text: "Mapping pigment density and colour variegation." },
+      { at: 8600, stage: 4, text: "Segmenting lesion border and colour zones." },
       { at: 10000, stage: 4, text: "Combining channel evaluations." },
     ] as const;
 
@@ -1263,7 +1062,7 @@ const Dashboard = () => {
       });
       return [null, null, null];
     });
-    setSegmentationLayers(null);
+    setLesion(null);
     setView("ch1");
     setCaptureOpen(false);
     setStatus("Waiting for spectral channels.");
@@ -1332,9 +1131,9 @@ const Dashboard = () => {
     const images = await buildReportImages(
       slots.map((s) => s?.preview ?? null),
       fusedPreview,
-      segmentationLayers
+      lesion
     );
-    await renderReport(win, { anamnesis, top, predictions, riskScore, channelResults, fusion: fusionInfo, date: scanDate, doctorId, images });
+    await renderReport(win, { anamnesis, top, predictions, riskScore, channelResults, fusion: fusionInfo, date: scanDate, doctorId, images, lesion });
   };
 
   const downloadDemoReport = async (demo: DemoPatient) => {
@@ -1343,8 +1142,8 @@ const Dashboard = () => {
     const win = openReportWindow();
     if (!win) return;
     const fused = await buildFusedMap([...demo.photos]);
-    const layers = fused ? await buildSegmentationLayers(fused) : null;
-    const images = await buildReportImages([...demo.photos], fused, layers);
+    const demoLesion = fused ? await analyzeLesion({ base: demo.photos[0], polarized: demo.photos[1] }) : null;
+    const images = await buildReportImages([...demo.photos], fused, demoLesion);
     await renderReport(win, {
       anamnesis: { ...demo.anamnesis },
       top: preds[0],
@@ -1355,6 +1154,7 @@ const Dashboard = () => {
       date: demo.scannedAt,
       doctorId: demo.doctorId,
       images,
+      lesion: demoLesion,
     });
   };
 
@@ -1705,24 +1505,28 @@ const Dashboard = () => {
           <div className="relative mt-2.5 h-[46vh] md:h-auto md:aspect-[4/3] lg:aspect-auto lg:flex-1 lg:min-h-0 rounded-lg bg-slate-900 overflow-hidden flex items-center justify-center">
             {activeAvailable && activeView.src ? (
               <div className="relative inline-flex max-h-full max-w-full">
-                <img src={activeView.src} alt={activeView.label} className={`block max-h-full max-w-full object-contain ${activeView.key === "heatmap" ? "saturate-110 contrast-110" : ""}`} />
+                <img src={activeView.src} alt={activeView.label} className="block max-h-full max-w-full object-contain" />
                 {activeView.key === "fused" && (
                   <div className="absolute inset-0 pointer-events-none opacity-25 bg-[linear-gradient(to_right,rgba(255,255,255,0.6)_1px,transparent_1px),linear-gradient(to_bottom,rgba(255,255,255,0.6)_1px,transparent_1px)] bg-[size:24px_24px]" />
                 )}
-                {activeView.key === "heatmap" && stage >= 3 && (
-                  <div className="absolute inset-0 mix-blend-multiply pointer-events-none">
-                    <div className="absolute top-[22%] left-[34%] w-[22%] h-[28%] rounded-full bg-red-500/60 blur-xl animate-pulse" />
-                    <div className="absolute top-[52%] left-[22%] w-[26%] h-[22%] rounded-full bg-red-500/45 blur-xl animate-pulse" />
-                    <div className="absolute top-[62%] left-[45%] w-[16%] h-[20%] rounded-full bg-red-500/45 blur-lg animate-pulse" />
-                  </div>
-                )}
-                {activeView.key === "segmentation" && stage >= 4 && segmentationLayers && (
+                {activeView.key === "heatmap" && stage >= 3 && lesion && (
                   <>
-                    <img src={segmentationLayers.normalSkin} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-50" />
-                    <img src={segmentationLayers.comedones} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-65" />
-                    <img src={segmentationLayers.hyperPigmentation} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-65" />
-                    <img src={segmentationLayers.activeAcne} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-70" />
+                    <img src={lesion.heatmap} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-90" />
+                    <img src={lesion.contour} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-60" />
                   </>
+                )}
+                {activeView.key === "segmentation" && stage >= 4 && lesion && (
+                  <>
+                    {lesion.layers.map((layer) => (
+                      <img key={layer.key} src={layer.url} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-55" />
+                    ))}
+                    <img src={lesion.contour} alt="" className="absolute inset-0 w-full h-full object-fill pointer-events-none opacity-95" />
+                  </>
+                )}
+                {(activeView.key === "heatmap" || activeView.key === "segmentation") && stage >= activeView.stageReq && !lesion && (
+                  <div className="absolute inset-0 flex items-end justify-center pb-3 pointer-events-none">
+                    <span className="text-[10px] text-slate-100 bg-slate-900/70 px-2 py-0.5 rounded">No distinct lesion detected in this frame</span>
+                  </div>
                 )}
                 {isCurrentStageView && (
                   <>
@@ -1759,19 +1563,19 @@ const Dashboard = () => {
             {activeView.key === "fused" && activeAvailable && (
               <span className="absolute right-2.5 bottom-2.5 text-[10px] text-slate-100 bg-slate-900/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">{loadedCount} spectral layers merged</span>
             )}
-            {activeView.key === "heatmap" && activeAvailable && stage >= 3 && (
+            {activeView.key === "heatmap" && activeAvailable && stage >= 3 && lesion && (
               <div className="absolute right-2.5 bottom-2.5 flex items-center gap-1.5 text-[10px] text-slate-100 bg-slate-900/70 backdrop-blur-sm px-1.5 py-0.5 rounded pointer-events-none">
                 <span>Low</span>
-                <span className="w-16 h-1.5 rounded-full bg-gradient-to-r from-transparent via-orange-400 to-red-500" />
-                <span>High</span>
+                <span className="w-20 h-1.5 rounded-full bg-gradient-to-r from-sky-400 via-lime-400 via-yellow-400 to-red-500" />
+                <span>High attention</span>
               </div>
             )}
-            {activeView.key === "segmentation" && activeAvailable && stage >= 4 && (
+            {activeView.key === "segmentation" && activeAvailable && stage >= 4 && lesion && (
               <div className="absolute right-2.5 bottom-2.5 rounded bg-slate-900/70 backdrop-blur-sm px-2 py-1 text-[10px] leading-tight text-slate-100 pointer-events-none grid grid-cols-2 gap-x-3 gap-y-0.5">
-                <div><span className="inline-block w-2 h-2 rounded-full bg-[#f04c35] mr-1 align-middle" />Damaged</div>
-                <div><span className="inline-block w-2 h-2 rounded-full bg-[#f2da3a] mr-1 align-middle" />Comedones</div>
-                <div><span className="inline-block w-2 h-2 rounded-full bg-[#9a62c9] mr-1 align-middle" />Pigmentation</div>
-                <div><span className="inline-block w-2 h-2 rounded-full bg-[#8ecdf2] mr-1 align-middle" />Normal skin</div>
+                <div><span className="inline-block w-2 h-2 rounded-full bg-cyan-400 mr-1 align-middle" />Lesion border</div>
+                {lesion.layers.filter((l) => l.pct > 0).map((l) => (
+                  <div key={l.key}><span className="inline-block w-2 h-2 rounded-full mr-1 align-middle" style={{ backgroundColor: l.color }} />{l.label} {l.pct}%</div>
+                ))}
               </div>
             )}
             {activeView.channel && slots[activeView.channel.id - 1] && (
@@ -1804,8 +1608,8 @@ const Dashboard = () => {
                       <div className="w-full h-full flex items-center justify-center text-slate-400"><ImagePlus className="w-3.5 h-3.5" /></div>
                     )}
                     {current && <div className="absolute inset-0 bg-sky-400/20 animate-pulse" />}
-                    {v.key === "heatmap" && available && stage >= 3 && <div className="absolute inset-0 bg-red-500/20 mix-blend-multiply" />}
-                    {v.key === "segmentation" && available && stage >= 4 && <div className="absolute inset-0 bg-sky-400/20" />}
+                    {v.key === "heatmap" && available && stage >= 3 && lesion && <img src={lesion.heatmap} alt="" className="absolute inset-0 w-full h-full object-cover opacity-90" />}
+                    {v.key === "segmentation" && available && stage >= 4 && lesion && <img src={lesion.contour} alt="" className="absolute inset-0 w-full h-full object-cover" />}
                   </div>
                   <div className="flex items-center justify-between gap-1 mt-1 px-0.5">
                     <span className={`text-[10px] font-medium truncate ${available ? "text-slate-700" : "text-slate-400"}`}>{v.channel ? `${v.channel.short} ${v.channel.name}` : v.label}</span>
@@ -1961,6 +1765,56 @@ const Dashboard = () => {
                   ))}
                 </div>
               </div>
+
+              {lesion && (
+                <div className="rounded-lg border border-slate-200 p-3">
+                  <div className="flex items-center justify-between mb-1.5">
+                    <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500">Dermoscopic features</p>
+                    <span className="text-[9px] text-slate-400">image-derived</span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px]">
+                    <div>
+                      <p className="text-slate-500">Asymmetry</p>
+                      <p className="font-semibold text-slate-800">{lesion.metrics.asymmetryAxes}/2 axes <span className="font-normal text-slate-500">· {Math.round(lesion.metrics.asymmetry * 100)}%</span></p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500">Border</p>
+                      <p className="font-semibold text-slate-800">{lesion.metrics.borderSegments}/8 abrupt <span className="font-normal text-slate-500">· irr. {lesion.metrics.borderIrregularity.toFixed(2)}</span></p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500">Lesion area</p>
+                      <p className="font-semibold text-slate-800">{lesion.metrics.areaPct}% <span className="font-normal text-slate-500">· Ø {lesion.metrics.diameterPct}% of field</span></p>
+                    </div>
+                    <div>
+                      <p className="text-slate-500">Variegation</p>
+                      <p className="font-semibold text-slate-800">{Math.round(lesion.metrics.variegation * 100)}%</p>
+                    </div>
+                  </div>
+                  <p className="text-slate-500 text-[11px] mt-2">Colours · {lesion.metrics.colours.length}</p>
+                  <div className="flex flex-wrap gap-1 mt-1">
+                    {lesion.metrics.colours.length ? (
+                      lesion.metrics.colours.map((c) => (
+                        <span key={c.key} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full border border-slate-200 bg-white text-slate-700">
+                          <span className="w-2 h-2 rounded-full border border-black/10" style={{ backgroundColor: c.swatch }} />
+                          {c.label} {c.pct}%
+                        </span>
+                      ))
+                    ) : (
+                      <span className="text-[10px] text-slate-400">–</span>
+                    )}
+                  </div>
+                  <div className="mt-2 h-1.5 rounded-full overflow-hidden flex bg-slate-100">
+                    {lesion.layers.filter((l) => l.pct > 0).map((l) => (
+                      <span key={l.key} className="h-full" style={{ width: `${l.pct}%`, backgroundColor: l.color }} title={`${l.label} ${l.pct}%`} />
+                    ))}
+                  </div>
+                  <div className="flex flex-wrap gap-x-2.5 gap-y-0.5 mt-1">
+                    {lesion.layers.filter((l) => l.pct > 0).map((l) => (
+                      <span key={l.key} className="text-[9px] text-slate-500 inline-flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full" style={{ backgroundColor: l.color }} />{l.label} {l.pct}%</span>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               <div className="rounded-lg border border-slate-200 p-3">
                 <p className="text-[10px] font-semibold uppercase tracking-wide text-slate-500 mb-1.5">Per-channel evaluation</p>
