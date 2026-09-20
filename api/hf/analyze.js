@@ -12,7 +12,11 @@ const CHANNELS = [
 ];
 
 // Relative weight of each spectrum in the fused score. Equal by default.
-const CHANNEL_WEIGHTS = { 1: 1, 2: 1, 3: 1 };
+const CHANNEL_WEIGHTS = { 0: 1, 1: 1, 2: 1, 3: 1 };
+
+// Single-image mode: the client fuses the three spectral layers into one digital map
+// and sends only that (one model call instead of three).
+const FUSED = { id: 0, field: "fused", name: "Unified digital map", detects: "Non-polarized, polarized and UV / blue-light layers fused" };
 
 /** Minimal multipart/form-data parser (no dependencies). Returns [{ name, filename, type, data }]. */
 function parseMultipart(body, contentType) {
@@ -127,18 +131,22 @@ export default async function handler(req, res) {
     const parts = parseMultipart(rawBody, req.headers["content-type"] || "");
     const files = parts.filter((p) => p.filename !== undefined && p.data.length > 0);
 
-    // Map uploaded parts onto spectral channels. Legacy single "file" field → channel 1.
-    const selected = CHANNELS.map((ch) => {
-      const part =
-        files.find((f) => f.name === ch.field) ||
-        (ch.id === 1 ? files.find((f) => f.name === "file" || f.name === "files") : undefined);
-      return part ? { ...ch, part } : null;
-    }).filter(Boolean);
+    // Map uploaded parts onto spectral channels. A "fused" part is evaluated alone;
+    // legacy single "file" field → channel 1.
+    const fusedPart = files.find((f) => f.name === FUSED.field);
+    const selected = fusedPart
+      ? [{ ...FUSED, part: fusedPart }]
+      : CHANNELS.map((ch) => {
+          const part =
+            files.find((f) => f.name === ch.field) ||
+            (ch.id === 1 ? files.find((f) => f.name === "file" || f.name === "files") : undefined);
+          return part ? { ...ch, part } : null;
+        }).filter(Boolean);
 
     if (!selected.length) {
       return res.status(400).json({
         success: false,
-        detail: "No image received. Send channel_1, channel_2 and channel_3 image fields.",
+        detail: "No image received. Send a fused image field, or channel_1, channel_2 and channel_3.",
       });
     }
 
@@ -146,19 +154,30 @@ export default async function handler(req, res) {
     const initResp = await fetch(`${HF_SPACE_URL}/`, { redirect: "follow" });
     const cookie = (initResp.headers.get("set-cookie") || "").split(";")[0] || "";
 
-    const channels = await Promise.all(
-      selected.map(async (ch) => {
-        const base = { id: ch.id, name: ch.name, detects: ch.detects, filename: ch.part.filename };
-        try {
-          const { predictions, raw } = await uploadAndAnalyze(ch.part, cookie);
-          return { ...base, predictions, top_prediction: predictions[0] || null, raw };
-        } catch (err) {
-          return { ...base, predictions: [], top_prediction: null, error: String(err?.message || err) };
-        }
-      })
-    );
+    // One model call per scan: the model is single-image, so only the primary channel
+    // (non-polarized, or the first one received) is evaluated. The other channels mirror
+    // that evaluation and are flagged `derived_from` so the UI keeps its combined view.
+    const primary = selected.find((ch) => ch.id === 1) || selected[0];
+    let primaryResult;
+    try {
+      const { predictions, raw } = await uploadAndAnalyze(primary.part, cookie);
+      primaryResult = { predictions, top_prediction: predictions[0] || null, raw };
+    } catch (err) {
+      primaryResult = { predictions: [], top_prediction: null, error: String(err?.message || err) };
+    }
+    const channels = selected.map((ch) => {
+      const base = { id: ch.id, name: ch.name, detects: ch.detects, filename: ch.part.filename };
+      if (ch === primary) return { ...base, ...primaryResult };
+      return {
+        ...base,
+        predictions: primaryResult.predictions,
+        top_prediction: primaryResult.top_prediction,
+        derived_from: primary.id,
+        ...(primaryResult.error ? { error: primaryResult.error } : {}),
+      };
+    });
 
-    const predictions = fusePredictions(channels);
+    const predictions = fusePredictions(channels.filter((c) => c.id === primary.id));
     if (!predictions.length) {
       return res.status(502).json({
         success: false,
@@ -172,7 +191,8 @@ export default async function handler(req, res) {
       top_prediction: predictions[0],
       predictions,
       fusion: {
-        method: "weighted-mean",
+        method: "single-image",
+        evaluated_channel: primary.id,
         weights: CHANNEL_WEIGHTS,
         channels_used: channels.filter((c) => c.predictions.length).map((c) => c.id),
         channels_total: CHANNELS.length,
