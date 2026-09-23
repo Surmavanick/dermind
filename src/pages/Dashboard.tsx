@@ -180,6 +180,21 @@ interface SpectrumDocument {
 
 const isSpectrumFile = (file: File) => /\.spectrum$/i.test(file.name);
 
+type CaptureKind = "spectrum" | "zip" | "image" | "unknown";
+
+/** Detects the capture type from content, for pickers that hand over renamed or extension-less files. */
+const sniffCaptureKind = async (file: File): Promise<CaptureKind> => {
+  const head = new Uint8Array(await file.slice(0, 512).arrayBuffer());
+  if (head.length >= 4 && head[0] === 0x50 && head[1] === 0x4b && head[2] === 0x03 && head[3] === 0x04) return "zip";
+  if (head.length >= 3 && head[0] === 0xff && head[1] === 0xd8 && head[2] === 0xff) return "image";
+  if (head.length >= 8 && head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) return "image";
+  if (head.length >= 12 && head[0] === 0x52 && head[1] === 0x49 && head[2] === 0x46 && head[3] === 0x46 && head[8] === 0x57 && head[9] === 0x45) return "image";
+  const text = new TextDecoder().decode(head).trimStart();
+  if (text.startsWith("{") && /"format"\s*:\s*"dermio\.spectrum"/.test(text)) return "spectrum";
+  if (text.startsWith("{")) return "spectrum";
+  return "unknown";
+};
+
 const base64ToBytes = (data: string) => {
   const raw = data.replace(/^data:[^,]*,/, "").replace(/\s+/g, "");
   const bin = atob(raw);
@@ -864,7 +879,7 @@ const Dashboard = () => {
 
   /** Places dropped files into channel slots starting at `startIdx` (drop 3 files on Ch 1 to fill all). */
   const assignFiles = (startIdx: number, incoming: FileList | File[]) => {
-    const images = Array.from(incoming).filter((f) => f.type.startsWith("image/"));
+    const images = Array.from(incoming).filter((f) => f.type.startsWith("image/") || IMAGE_ENTRY.test(f.name) || !f.type);
     if (!images.length) {
       setStatus("Please upload image files (JPG, PNG, WEBP).");
       return;
@@ -888,10 +903,6 @@ const Dashboard = () => {
 
   /** Reads a `.spectrum` capture, fills the three channels and any patient data it carries. */
   const handleSpectrumFile = async (file: File) => {
-    if (!isSpectrumFile(file)) {
-      setStatus("Please select a .spectrum capture file.");
-      return;
-    }
     setStatus(`Reading ${file.name}…`);
     try {
       const { files, patient, device } = await parseSpectrumFile(file);
@@ -923,11 +934,14 @@ const Dashboard = () => {
    * .zip route is the fallback there.
    */
   const handleCaptureFile = async (file: File) => {
-    if (isSpectrumFile(file)) {
+    if (spectrumInputRef.current) spectrumInputRef.current.value = "";
+    let kind: CaptureKind = isSpectrumFile(file) ? "spectrum" : isZipFile(file) ? "zip" : file.type.startsWith("image/") ? "image" : "unknown";
+    if (kind === "unknown") kind = await sniffCaptureKind(file);
+    if (kind === "spectrum") {
       await handleSpectrumFile(file);
       return;
     }
-    if (isZipFile(file)) {
+    if (kind === "zip") {
       setStatus(`Unpacking ${file.name}…`);
       try {
         const entries = await readZipEntries(file);
@@ -951,12 +965,12 @@ const Dashboard = () => {
       }
       return;
     }
-    if (file.type.startsWith("image/")) {
+    if (kind === "image") {
       setCaptureMode("images");
       assignFiles(0, [file]);
       return;
     }
-    setStatus("Please select a .spectrum capture, a .zip containing one, or channel images.");
+    setStatus(`${file.name || "This file"} is not a .spectrum capture, a .zip, or an image.`);
   };
 
   /** Drop target that accepts a .spectrum capture, a .zip, or plain channel images. */
@@ -1213,6 +1227,10 @@ const Dashboard = () => {
   const statusLabel = loading ? "Analyzing" : top ? "Complete" : allChannelsReady ? "Ready" : "Awaiting input";
 
   const showCapture = !top && !loading && (!allChannelsReady || captureOpen);
+  const captureFeedback =
+    status && status !== "Waiting for spectral channels."
+      ? { text: status, error: /^(Error|Not a|This |Could not|Please|Unsupported|Corrupt|Channel \d|.* is not a|.* contains no|Analysis service)/.test(status) }
+      : null;
 
   const panel = "bg-white border border-slate-200/80 rounded-xl shadow-[0_1px_2px_rgba(15,23,42,0.04)]";
 
@@ -1446,7 +1464,6 @@ const Dashboard = () => {
                   <input
                     ref={spectrumInputRef}
                     type="file"
-                    accept=".spectrum,.zip,application/zip,application/json,application/octet-stream,image/*,*/*"
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -1551,6 +1568,11 @@ const Dashboard = () => {
                   </div>
                   <p className="text-[11px] text-slate-500 text-center mt-2.5">Drop all three photos onto Ch 1 to fill the channels in order.</p>
                 </>
+              )}
+              {captureFeedback && (
+                <div className={`mt-2.5 rounded-lg px-3 py-2 text-xs text-center border ${captureFeedback.error ? "bg-rose-950/60 border-rose-700/60 text-rose-200" : "bg-slate-800/80 border-slate-700 text-slate-200"}`}>
+                  {captureFeedback.text}
+                </div>
               )}
             </div>
           ) : (
