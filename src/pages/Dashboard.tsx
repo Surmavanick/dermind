@@ -41,6 +41,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import DermioLogo from "@/components/DermioLogo";
 import { analyzeLesion, type LesionAnalysis } from "@/lib/lesionAnalysis";
+import { isZipFile, readZipEntries } from "@/lib/zip";
 import { DEMO_PATIENTS_BY_DATE, type DemoPatient } from "@/data/demoPatients";
 
 const AUTH_KEY = "doctor_auth_session";
@@ -209,11 +210,15 @@ const parseSpectrumFile = async (file: File): Promise<{ files: File[]; patient?:
 };
 
 const SPECTRUM_SAMPLES = [
-  { label: "Nino B.", href: "/demo/melanoma.spectrum", download: "nino-beridze.spectrum" },
-  { label: "Giorgi K.", href: "/demo/bcc.spectrum", download: "giorgi-kapanadze.spectrum" },
-  { label: "Tamar L.", href: "/demo/sk.spectrum", download: "tamar-lomidze.spectrum" },
-  { label: "Mariam G.", href: "/demo/psoriasis.spectrum", download: "mariam-gelashvili.spectrum" },
+  { label: "Nino B.", href: "/demo/melanoma.spectrum", download: "nino-beridze.spectrum", zip: "/demo/melanoma.zip", zipDownload: "nino-beridze.zip" },
+  { label: "Giorgi K.", href: "/demo/bcc.spectrum", download: "giorgi-kapanadze.spectrum", zip: "/demo/bcc.zip", zipDownload: "giorgi-kapanadze.zip" },
+  { label: "Tamar L.", href: "/demo/sk.spectrum", download: "tamar-lomidze.spectrum", zip: "/demo/sk.zip", zipDownload: "tamar-lomidze.zip" },
+  { label: "Mariam G.", href: "/demo/psoriasis.spectrum", download: "mariam-gelashvili.spectrum", zip: "/demo/psoriasis.zip", zipDownload: "mariam-gelashvili.zip" },
 ];
+
+const IMAGE_ENTRY = /\.(jpe?g|png|webp)$/i;
+const mimeForName = (name: string) => (/\.png$/i.test(name) ? "image/png" : /\.webp$/i.test(name) ? "image/webp" : "image/jpeg");
+const baseName = (path: string) => path.split("/").pop() || path;
 
 /* ------------------------------------------------------------------ */
 /* Patient anamnesis                                                   */
@@ -912,12 +917,54 @@ const Dashboard = () => {
     if (spectrumInputRef.current) spectrumInputRef.current.value = "";
   };
 
-  /** Drop target that accepts either a .spectrum capture or plain channel images. */
+  /**
+   * Any single capture file: a .spectrum, a .zip holding a .spectrum (or channel
+   * images), or a plain image. Tablets often cannot pick custom extensions, so the
+   * .zip route is the fallback there.
+   */
+  const handleCaptureFile = async (file: File) => {
+    if (isSpectrumFile(file)) {
+      await handleSpectrumFile(file);
+      return;
+    }
+    if (isZipFile(file)) {
+      setStatus(`Unpacking ${file.name}…`);
+      try {
+        const entries = await readZipEntries(file);
+        const spectrum = entries.find((e) => /\.spectrum$/i.test(e.name));
+        if (spectrum) {
+          await handleSpectrumFile(new File([spectrum.data], baseName(spectrum.name), { type: "application/json" }));
+          return;
+        }
+        const images = entries
+          .filter((e) => IMAGE_ENTRY.test(e.name) && !baseName(e.name).startsWith("."))
+          .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }))
+          .slice(0, CHANNELS.length);
+        if (images.length) {
+          setCaptureMode("images");
+          assignFiles(0, images.map((e) => new File([e.data], baseName(e.name), { type: mimeForName(e.name) })));
+          return;
+        }
+        setStatus(`${file.name} contains no .spectrum capture or channel images.`);
+      } catch (e: unknown) {
+        setStatus(e instanceof Error ? e.message : "Could not unpack the .zip file.");
+      }
+      return;
+    }
+    if (file.type.startsWith("image/")) {
+      setCaptureMode("images");
+      assignFiles(0, [file]);
+      return;
+    }
+    setStatus("Please select a .spectrum capture, a .zip containing one, or channel images.");
+  };
+
+  /** Drop target that accepts a .spectrum capture, a .zip, or plain channel images. */
   const handleCaptureDrop = (files: FileList) => {
     const list = Array.from(files);
-    const spectrum = list.find(isSpectrumFile);
-    if (spectrum) {
-      void handleSpectrumFile(spectrum);
+    const packaged = list.find(isSpectrumFile) ?? list.find(isZipFile);
+    if (packaged) {
+      void handleCaptureFile(packaged);
       return;
     }
     if (list.some((f) => f.type.startsWith("image/"))) {
@@ -925,7 +972,7 @@ const Dashboard = () => {
       assignFiles(0, list);
       return;
     }
-    setStatus("Drop a .spectrum capture or JPG/PNG channel images.");
+    setStatus("Drop a .spectrum capture, a .zip containing one, or JPG/PNG channel images.");
   };
 
   const removeChannel = (idx: number) => {
@@ -1399,11 +1446,11 @@ const Dashboard = () => {
                   <input
                     ref={spectrumInputRef}
                     type="file"
-                    accept=".spectrum,application/json"
+                    accept=".spectrum,.zip,application/zip,application/json,application/octet-stream,image/*,*/*"
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
-                      if (f) void handleSpectrumFile(f);
+                      if (f) void handleCaptureFile(f);
                     }}
                   />
                   <div className="w-14 h-14 rounded-2xl bg-slate-800 border border-slate-700 group-hover:border-sky-500/60 flex items-center justify-center mb-4 transition-colors">
@@ -1411,18 +1458,23 @@ const Dashboard = () => {
                   </div>
                   <p className="text-slate-100 text-base font-semibold">Drop a .spectrum capture here</p>
                   <p className="text-slate-400 text-xs mt-1.5 max-w-md leading-relaxed">
-                    One file from the Dermio scanner that bundles all three spectral channels (non-polarized, polarized, UV / blue light) and, optionally, the patient record. Or click to browse.
+                    One file from the Dermio scanner that bundles all three spectral channels (non-polarized, polarized, UV / blue light) and, optionally, the patient record. A .zip containing the capture works too (use it on tablets). Or click to browse.
                   </p>
                   <span className="mt-4 inline-flex items-center gap-1.5 h-8 px-3.5 rounded-lg bg-clinical-blue text-white text-xs font-semibold shadow-sm group-hover:bg-clinical-blue/90 transition-colors">
                     <FileUp className="w-3.5 h-3.5" />
-                    Browse .spectrum file
+                    Browse .spectrum or .zip
                   </span>
                   <div className="mt-5 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[11px] text-slate-500">
                     <span>Sample captures:</span>
                     {SPECTRUM_SAMPLES.map((smp) => (
-                      <a key={smp.href} href={smp.href} download={smp.download} onClick={(e) => e.stopPropagation()} className="text-sky-300 hover:text-sky-200 underline underline-offset-2">
-                        {smp.label}
-                      </a>
+                      <span key={smp.href} className="inline-flex items-center gap-0.5">
+                        <a href={smp.href} download={smp.download} onClick={(e) => e.stopPropagation()} className="text-sky-300 hover:text-sky-200 underline underline-offset-2">
+                          {smp.label}
+                        </a>
+                        <a href={smp.zip} download={smp.zipDownload} onClick={(e) => e.stopPropagation()} className="text-slate-400 hover:text-sky-200" title={`${smp.label} as .zip (for tablets)`}>
+                          (zip)
+                        </a>
+                      </span>
                     ))}
                   </div>
                 </label>
