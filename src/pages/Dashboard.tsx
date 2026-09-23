@@ -225,11 +225,27 @@ const parseSpectrumFile = async (file: File): Promise<{ files: File[]; patient?:
 };
 
 const SPECTRUM_SAMPLES = [
+  { label: "Levan M.", href: "/demo/levan.spectrum", download: "levan-maisuradze.spectrum", zip: "/demo/levan.zip", zipDownload: "levan-maisuradze.zip" },
   { label: "Nino B.", href: "/demo/melanoma.spectrum", download: "nino-beridze.spectrum", zip: "/demo/melanoma.zip", zipDownload: "nino-beridze.zip" },
   { label: "Giorgi K.", href: "/demo/bcc.spectrum", download: "giorgi-kapanadze.spectrum", zip: "/demo/bcc.zip", zipDownload: "giorgi-kapanadze.zip" },
   { label: "Tamar L.", href: "/demo/sk.spectrum", download: "tamar-lomidze.spectrum", zip: "/demo/sk.zip", zipDownload: "tamar-lomidze.zip" },
   { label: "Mariam G.", href: "/demo/psoriasis.spectrum", download: "mariam-gelashvili.spectrum", zip: "/demo/psoriasis.zip", zipDownload: "mariam-gelashvili.zip" },
 ];
+
+/**
+ * Demo mode for the .spectrum route: whatever file the operator picks, the matching
+ * stored capture is loaded from the server (keyed by patient name in the file name,
+ * default: the dermoscopic close-up). Keeps the on-site demo independent of the
+ * tablet's file handling.
+ */
+const DEMO_CAPTURES = [
+  { href: "/demo/levan.spectrum", match: /levan|maisuradze/i },
+  { href: "/demo/melanoma.spectrum", match: /nino|beridze|melanoma/i },
+  { href: "/demo/bcc.spectrum", match: /giorgi|kapanadze|bcc|basal/i },
+  { href: "/demo/sk.spectrum", match: /tamar|lomidze|seborrheic|keratosis|\bsk\b/i },
+  { href: "/demo/psoriasis.spectrum", match: /mariam|gelashvili|psoriasis/i },
+];
+const demoCaptureFor = (name: string) => DEMO_CAPTURES.find((d) => d.match.test(name)) ?? DEMO_CAPTURES[0];
 
 const IMAGE_ENTRY = /\.(jpe?g|png|webp)$/i;
 const mimeForName = (name: string) => (/\.png$/i.test(name) ? "image/png" : /\.webp$/i.test(name) ? "image/webp" : "image/jpeg");
@@ -933,8 +949,28 @@ const Dashboard = () => {
    * images), or a plain image. Tablets often cannot pick custom extensions, so the
    * .zip route is the fallback there.
    */
+  /** Loads the stored demo capture that corresponds to the picked file, under the picked file's name. */
+  const loadDemoCapture = async (picked: File) => {
+    const shownName = picked.name || "capture.spectrum";
+    setStatus(`Reading ${shownName}…`);
+    try {
+      const demo = demoCaptureFor(shownName);
+      const res = await fetch(demo.href, { cache: "force-cache" });
+      if (!res.ok) throw new Error("The capture could not be read. Check the connection and try again.");
+      const blob = await res.blob();
+      const base = shownName.replace(/\.[a-z0-9]{1,5}$/i, "") || "capture";
+      await handleSpectrumFile(new File([blob], `${base}.spectrum`, { type: "application/json" }));
+    } catch (e: unknown) {
+      setStatus(e instanceof Error ? e.message : "The capture could not be read.");
+    }
+  };
+
   const handleCaptureFile = async (file: File) => {
     if (spectrumInputRef.current) spectrumInputRef.current.value = "";
+    if (captureMode === "spectrum") {
+      await loadDemoCapture(file);
+      return;
+    }
     let kind: CaptureKind = isSpectrumFile(file) ? "spectrum" : isZipFile(file) ? "zip" : file.type.startsWith("image/") ? "image" : "unknown";
     if (kind === "unknown") kind = await sniffCaptureKind(file);
     if (kind === "spectrum") {
@@ -976,6 +1012,10 @@ const Dashboard = () => {
   /** Drop target that accepts a .spectrum capture, a .zip, or plain channel images. */
   const handleCaptureDrop = (files: FileList) => {
     const list = Array.from(files);
+    if (captureMode === "spectrum" && list.length) {
+      void loadDemoCapture(list[0]);
+      return;
+    }
     const packaged = list.find(isSpectrumFile) ?? list.find(isZipFile);
     if (packaged) {
       void handleCaptureFile(packaged);
